@@ -138,6 +138,7 @@ inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 docker compose --profile vllm down
 
 scripts/run_matrix.sh                                # every config, then results/latest.md
+scripts/publish_results.sh                           # run the matrix and push results to GitHub
 ```
 
 Windows: run the scripts from WSL 2 with Docker Desktop's GPU support enabled, and set **CUDA - Sysmem Fallback
