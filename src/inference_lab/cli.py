@@ -3,7 +3,7 @@
 inference-lab gpu
 inference-lab plan kv --model qwen2.5-7b --tokens 32768
 inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 8192 --kv-cache-dtype fp8
-inference-lab plan llamacpp --model qwen2.5-32b --gguf-gib 18.5 --ctx 8192 -ctk q8_0 -ctv q8_0
+inference-lab plan llamacpp --gguf-path models/Qwen2.5-32B-Instruct-Q4_K_M.gguf --ctx 8192 -ctk q8_0 -ctv q8_0
 inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 inference-lab report
 inference-lab mcp
@@ -18,18 +18,31 @@ from pathlib import Path
 
 from . import report
 from .backends import load_backends
-from .gpu import gpu_snapshot
+from .gguf_layout import estimate_layout, read_gguf
+from .gpu import default_gpu_gib, gpu_snapshot
 from .models import get_model
 from .planner import LLAMACPP_KV_BYTES, VLLM_KV_BYTES, kv_dtype_table, plan_llamacpp, plan_vllm
 
 
 def _size_gib(path: str) -> float:
-    """Size of a model file, or of every weight file in a directory."""
+    """Size of a model file, or of a checkpoint directory's weights in one format
+    (safetensors, else GGUF, else .bin, so a folder holding two formats isn't double-counted)."""
     p = Path(path)
-    files = [p] if p.is_file() else [f for f in p.rglob("*") if f.suffix in (".safetensors", ".gguf", ".bin")]
-    if not files:
-        raise SystemExit(f"No model files found at {path}")
-    return sum(f.stat().st_size for f in files) / 1024**3
+    if p.is_file():
+        return p.stat().st_size / 1024**3
+    for suffix in (".safetensors", ".gguf", ".bin"):
+        files = list(p.rglob(f"*{suffix}"))
+        if files:
+            return sum(f.stat().st_size for f in files) / 1024**3
+    raise SystemExit(f"No model files found at {path}")
+
+
+def _gpu(arg: float | None, which: str) -> float:
+    if arg is not None:
+        return arg
+    gib, source = default_gpu_gib(which)
+    print(f"  planning against {source}\n")
+    return gib
 
 
 def _print_plan(d: dict) -> None:
@@ -63,20 +76,20 @@ def main(argv: list[str] | None = None) -> None:
     pv.add_argument("--model", required=True)
     w = pv.add_mutually_exclusive_group(required=True)
     w.add_argument("--weights-gib", type=float)
-    w.add_argument("--weights-path", help="checkpoint directory; sums its .safetensors files")
+    w.add_argument("--weights-path", help="checkpoint directory; sums its weight files")
     pv.add_argument("--max-model-len", type=int, default=8192)
-    pv.add_argument("--gpu-gib", type=float, default=16.0)
+    pv.add_argument("--gpu-gib", type=float, help="default: total VRAM from NVML")
     pv.add_argument("--gpu-memory-utilization", type=float, default=0.90)
     pv.add_argument("--kv-cache-dtype", default="auto", choices=sorted(VLLM_KV_BYTES))
     pv.add_argument("--overhead-gib", type=float, default=1.5, help="activations + CUDA graphs (estimate)")
 
     pl = plan.add_parser("llamacpp", help="largest -ngl that fits, for full or partial GPU offload")
-    pl.add_argument("--model", required=True)
     g = pl.add_mutually_exclusive_group(required=True)
-    g.add_argument("--gguf-gib", type=float)
-    g.add_argument("--gguf-path")
+    g.add_argument("--gguf-path", help="read exact tensor sizes and the model shape from the file")
+    g.add_argument("--gguf-gib", type=float, help="file size only (needs --model); layout is estimated")
+    pl.add_argument("--model", help="preset or config.json; with --gguf-path the file's own metadata is used")
     pl.add_argument("--ctx", type=int, default=8192, help="total context (-c), shared by all -np slots")
-    pl.add_argument("--gpu-gib", type=float, default=16.0)
+    pl.add_argument("--gpu-gib", type=float, help="default: free VRAM from NVML")
     pl.add_argument("-ctk", "--cache-type-k", default="f16", choices=sorted(LLAMACPP_KV_BYTES))
     pl.add_argument("-ctv", "--cache-type-v", default="f16", choices=sorted(LLAMACPP_KV_BYTES))
     pl.add_argument("--reserve-gib", type=float, default=1.0, help="compute buffer + display (estimate)")
@@ -88,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--prompt-tokens", type=int, default=512)
     b.add_argument("--max-tokens", type=int, default=256)
     b.add_argument("--label", help="name this server config in the report, e.g. vllm-fp8kv")
+    b.add_argument("--allow-eos", action="store_true", help="let the model stop early (default: fixed length)")
     b.add_argument("--config", help="backends YAML (default configs/backends.yaml)")
 
     sub.add_parser("report", help="rebuild results/latest.md from saved runs")
@@ -114,7 +128,7 @@ def main(argv: list[str] | None = None) -> None:
         _print_plan(
             plan_vllm(
                 get_model(a.model),
-                a.gpu_gib,
+                _gpu(a.gpu_gib, "total"),
                 weights,
                 a.max_model_len,
                 a.gpu_memory_utilization,
@@ -123,18 +137,24 @@ def main(argv: list[str] | None = None) -> None:
             ).as_dict()
         )
     elif a.cmd == "plan" and a.kind == "llamacpp":
-        gguf = a.gguf_gib if a.gguf_gib is not None else _size_gib(a.gguf_path)
-        _print_plan(
-            plan_llamacpp(
-                get_model(a.model), gguf, a.ctx, a.gpu_gib, a.cache_type_k, a.cache_type_v, a.reserve_gib
-            ).as_dict()
-        )
+        if a.gguf_path:
+            layout = read_gguf(a.gguf_path)
+            model = get_model(a.model) if a.model else layout.spec
+        else:
+            if not a.model:
+                raise SystemExit("--gguf-gib needs --model")
+            model = get_model(a.model)
+            layout = estimate_layout(model, int(a.gguf_gib * 1024**3))
+        gpu = _gpu(a.gpu_gib, "free")
+        _print_plan(plan_llamacpp(model, layout, a.ctx, gpu, a.cache_type_k, a.cache_type_v, a.reserve_gib).as_dict())
     elif a.cmd == "bench":
         from .bench import run_benchmark
 
         backend = load_backends(a.config)[a.backend]
         result = asyncio.run(
-            run_benchmark(backend, a.concurrency, a.requests, a.prompt_tokens, a.max_tokens, a.label)
+            run_benchmark(
+                backend, a.concurrency, a.requests, a.prompt_tokens, a.max_tokens, a.label, ignore_eos=not a.allow_eos
+            )
         ).as_dict()
         path = report.save(result)
         print(report.markdown([result]))

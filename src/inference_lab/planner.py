@@ -7,9 +7,10 @@ Everything else here is budgeting around that number:
   activation and CUDA-graph memory, and turns the rest into fixed 16-token KV blocks
   (PagedAttention). The plan predicts that block count; `inference-lab bench` reads the
   real one from vLLM's `cache_config_info` metric so the two can be compared.
-- llama.cpp puts the first `-ngl` layers (weights and their KV cache) on the GPU and the
-  rest on the CPU. The plan finds the largest `-ngl` that fits, which is how a model
-  bigger than VRAM still runs.
+- llama.cpp with `-ngl N` puts the output head and the LAST N-1 transformer blocks (each
+  with its KV cache) on the GPU; the first blocks and the token embeddings stay on the CPU.
+  The plan finds the largest N that fits, which is how a model bigger than VRAM still
+  runs. (Recent llama.cpp can pick N itself with `--fit`; this does it in the open.)
 
 Estimates, not guarantees: activation and compute-buffer sizes vary by batch size and
 version, so the overhead terms are parameters with conservative defaults.
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from .gguf_layout import GgufLayout
 from .models import ModelSpec
 
 GIB = 1024**3
@@ -37,19 +39,11 @@ LLAMACPP_KV_BYTES = {
     "q4_0": 18 / 32,
     "iq4_nl": 18 / 32,
 }
-# Rough effective bits per weight, for when the file size isn't known yet.
-BITS_PER_WEIGHT = {"f16": 16.0, "bf16": 16.0, "fp8": 8.0, "q8_0": 8.5, "q6_k": 6.56, "q5_k_m": 5.69, "q4_k_m": 4.89}
 
 
 def kv_bytes_per_token(model: ModelSpec, k_bytes: float, v_bytes: float | None = None) -> float:
     v_bytes = k_bytes if v_bytes is None else v_bytes
     return model.n_layers * model.n_kv_heads * model.head_dim * (k_bytes + v_bytes)
-
-
-def estimate_weights_gib(model: ModelSpec, quant: str) -> float:
-    """Rough weight size. Prefer the real file size: AWQ/GPTQ checkpoints keep embeddings
-    in 16-bit, so they are larger than params x 4 bits suggests."""
-    return model.params_b * 1e9 * BITS_PER_WEIGHT[quant.lower()] / 8 / GIB
 
 
 @dataclass
@@ -124,75 +118,86 @@ def plan_vllm(
 @dataclass
 class OffloadPlan:
     model: str
-    gguf_gib: float
+    layout_source: str  # "gguf" (tensor table read) or "estimate" (from file size and model shape)
     ctx: int
     cache_type_k: str
     cache_type_v: str
     gpu_gib: float
     reserve_gib: float
-    weights_per_layer_gib: float
-    kv_per_layer_gib: float
-    gpu_layers: int  # value for -ngl
-    total_layers: int
+    ngl: int  # value for -ngl (99 = everything)
+    blocks_on_gpu: int
+    total_blocks: int
     full_offload: bool
     vram_estimate_gib: float
-    kv_total_gib: float
+    cpu_weights_gib: float  # stays in system RAM: token embeddings plus blocks not offloaded
+    kv_per_block_gib: float
     advice: str
 
     def as_dict(self) -> dict:
         return asdict(self)
 
 
+def _gpu_bytes(layout: GgufLayout, ngl: int, kv_block: float) -> float:
+    """VRAM for -ngl ngl, excluding the reserve. llama.cpp (llama-model.cpp) assigns the
+    output head the first GPU slot, then the last ngl-1 blocks; token_embd stays on the CPU."""
+    if ngl <= 0:
+        return 0.0
+    blocks = min(ngl - 1, layout.n_layers)
+    on_gpu = layout.block_bytes[layout.n_layers - blocks :] if blocks else []
+    return layout.output_bytes + sum(on_gpu) + blocks * kv_block
+
+
 def plan_llamacpp(
     model: ModelSpec,
-    gguf_gib: float,
+    layout: GgufLayout,
     ctx: int,
     gpu_gib: float,
     cache_type_k: str = "f16",
     cache_type_v: str = "f16",
     reserve_gib: float = 1.0,
 ) -> OffloadPlan:
-    """Largest -ngl that fits. The GGUF is split evenly over the repeating layers plus one
-    extra unit for the embeddings and output head, which llama.cpp offloads last.
-    reserve_gib covers the compute buffer and anything else on the GPU (a desktop's display)."""
-    kv_token_layer = (
-        model.n_kv_heads * model.head_dim * (LLAMACPP_KV_BYTES[cache_type_k] + LLAMACPP_KV_BYTES[cache_type_v])
+    """Largest -ngl that fits in gpu_gib. reserve_gib covers llama.cpp's compute buffer and
+    anything else on the GPU (a desktop's display). ctx is the total -c shared by all slots."""
+    kv_block = (
+        ctx * model.n_kv_heads * model.head_dim * (LLAMACPP_KV_BYTES[cache_type_k] + LLAMACPP_KV_BYTES[cache_type_v])
     )
-    kv_layer_gib = ctx * kv_token_layer / GIB
-    units = model.n_layers + 1
-    w_layer_gib = gguf_gib / units
-    available = gpu_gib - reserve_gib
-    fit = int(available // (w_layer_gib + kv_layer_gib)) if available > 0 else 0
-    gpu_layers = min(fit, units)
-    full = gpu_layers >= units
-    kv_on_gpu = min(gpu_layers, model.n_layers) * kv_layer_gib
-    vram = gpu_layers * w_layer_gib + kv_on_gpu + reserve_gib
+    budget = (gpu_gib - reserve_gib) * GIB
+    units = layout.n_layers + 1
+    ngl = 0
+    for n in range(1, units + 1):
+        if _gpu_bytes(layout, n, kv_block) > budget:
+            break
+        ngl = n
+    full = ngl >= units
+    blocks = max(0, ngl - 1)
+    vram = _gpu_bytes(layout, ngl, kv_block) / GIB + reserve_gib
+    cpu = layout.token_embd_bytes + sum(layout.block_bytes[: layout.n_layers - blocks]) + layout.other_bytes
     if full:
-        spare = gpu_gib - vram
-        advice = f"Everything fits on the GPU (-ngl 99) with about {spare:.1f} GiB to spare for a longer context."
-    elif gpu_layers == 0:
-        advice = "Nothing fits on the GPU; use a smaller quantization or a shorter context."
+        advice = f"Everything fits (-ngl 99) with about {gpu_gib - vram:.1f} GiB to spare for a longer context."
+    elif ngl == 0:
+        advice = "Even the output head doesn't fit; use a smaller quantization or a shorter context."
     else:
         advice = (
-            f"Offload {gpu_layers} of {units} layers (-ngl {gpu_layers}); the rest run on the CPU, "
-            "so generation speed is bound by system RAM bandwidth. A quantized KV cache "
-            "(-ctk q8_0 -ctv q8_0, needs -fa on) frees room for more GPU layers."
+            f"-ngl {ngl}: the output head and the last {blocks} of {layout.n_layers} blocks on the GPU, "
+            f"{cpu / GIB:.1f} GiB of weights in system RAM. Generation speed is then bound by RAM bandwidth."
         )
+        if LLAMACPP_KV_BYTES[cache_type_k] + LLAMACPP_KV_BYTES[cache_type_v] > 2 * LLAMACPP_KV_BYTES["q8_0"]:
+            advice += " A quantized KV cache (-ctk q8_0 -ctv q8_0, with -fa on) frees room for more blocks."
     return OffloadPlan(
         model=model.name,
-        gguf_gib=gguf_gib,
+        layout_source=layout.source,
         ctx=ctx,
         cache_type_k=cache_type_k,
         cache_type_v=cache_type_v,
-        gpu_gib=gpu_gib,
+        gpu_gib=round(gpu_gib, 2),
         reserve_gib=reserve_gib,
-        weights_per_layer_gib=round(w_layer_gib, 4),
-        kv_per_layer_gib=round(kv_layer_gib, 4),
-        gpu_layers=99 if full else gpu_layers,
-        total_layers=units,
+        ngl=99 if full else ngl,
+        blocks_on_gpu=blocks,
+        total_blocks=layout.n_layers,
         full_offload=full,
         vram_estimate_gib=round(vram, 2),
-        kv_total_gib=round(model.n_layers * kv_layer_gib, 2),
+        cpu_weights_gib=round(cpu / GIB, 2),
+        kv_per_block_gib=round(kv_block / GIB, 4),
         advice=advice,
     )
 

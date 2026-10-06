@@ -6,10 +6,11 @@ import json
 import re
 from pathlib import Path
 
-RESULTS = Path("results")
+from . import paths
 
 
-def save(result: dict, results_dir: Path = RESULTS) -> Path:
+def save(result: dict, results_dir: Path | None = None) -> Path:
+    results_dir = results_dir or paths.results_dir()
     results_dir.mkdir(parents=True, exist_ok=True)
     stamp = re.sub(r"[^0-9]", "", result["started_at"])[:12]
     slug = re.sub(r"[^a-zA-Z0-9_.-]+", "-", result["label"]).strip("-")
@@ -18,8 +19,9 @@ def save(result: dict, results_dir: Path = RESULTS) -> Path:
     return path
 
 
-def load_all(results_dir: Path = RESULTS) -> list[dict]:
+def load_all(results_dir: Path | None = None) -> list[dict]:
     """Latest run per label, oldest label first."""
+    results_dir = results_dir or paths.results_dir()
     latest: dict[str, dict] = {}
     for path in sorted(results_dir.glob("*.json")):
         run = json.loads(path.read_text())
@@ -47,23 +49,28 @@ def markdown(runs: list[dict]) -> str:
     lines = ["# Benchmarks", ""]
     if gpu:
         lines.append(f"GPU: {gpu['name']}, {gpu['memory_total_gib']} GiB, driver {gpu['driver']}.")
-    first = runs[0]
     lines += [
-        f"Each request: about {first['prompt_tokens']} prompt tokens, up to {first['max_tokens']} output tokens, "
-        "temperature 0, streamed. TTFT = time to first token; TPOT = time per output token after that.",
+        "TTFT = time to first token; TPOT = time per output token after that. Prompt / output = mean tokens per "
+        "request as the server counted them (chat template included); target in brackets.",
         "",
-        "| Server config | Model | Concurrency | Throughput (tok/s) | TTFT p50 / p95 (ms) | TPOT p50 (ms) "
-        "| Peak VRAM (GiB) | Peak KV cache | Preemptions | Errors |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Server config | Model | Concurrency | Prompt / output tokens | Throughput (tok/s) "
+        "| TTFT p50 / p95 (ms) | TPOT p50 (ms) | Peak VRAM (GiB) | Peak KV cache | Preemptions | Errors |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for run in runs:
+        target = f"[{run.get('prompt_tokens', '?')} / {run.get('max_tokens', '?')}]"
         for lv in run["levels"]:
+            tokens = f"{_fmt(lv.get('mean_prompt_tokens'))} / {_fmt(lv.get('mean_output_tokens'))} {target}"
             lines.append(
-                f"| {run['label']} | {run['model']} | {lv['concurrency']} | {_fmt(lv['throughput_tok_s'])} "
+                f"| {run['label']} | {run['model']} | {lv['concurrency']} | {tokens} | {_fmt(lv['throughput_tok_s'])} "
                 f"| {_fmt(lv['ttft_p50_ms'])} / {_fmt(lv['ttft_p95_ms'])} | {_fmt(lv['tpot_p50_ms'])} "
                 f"| {_fmt(lv['peak_vram_gib'])} | {_pct(lv['peak_kv_cache_usage'])} | {_fmt(lv['preemptions'])} "
                 f"| {lv['errors']}/{lv['requests']} |"
             )
+    lines += [
+        "",
+        "Peak KV cache comes from vLLM's `vllm:kv_cache_usage_perc`; current llama.cpp and Ollama don't report it (–).",
+    ]
     alloc = [(r["label"], r["server"]["cache_config"]) for r in runs if r.get("server", {}).get("cache_config")]
     if alloc:
         lines += [
@@ -82,7 +89,8 @@ def markdown(runs: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_markdown(results_dir: Path = RESULTS) -> Path:
+def write_markdown(results_dir: Path | None = None) -> Path:
+    results_dir = results_dir or paths.results_dir()
     path = results_dir / "latest.md"
     results_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown(load_all(results_dir)))

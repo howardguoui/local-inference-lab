@@ -52,6 +52,9 @@ def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20)
         if body.get("model") != "fake/qwen-7b":
             return JSONResponse({"error": "unknown model"}, status_code=404)
         n = min(tokens, body.get("max_tokens", tokens))
+        if not body.get("ignore_eos"):
+            n = min(n, 5)  # the "model" reaches end-of-sequence early unless told to ignore it
+        prompt = body["messages"][-1]["content"]
 
         async def gen():
             state["active"] += 1
@@ -60,8 +63,12 @@ def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20)
                 state["preemptions"] += 1
             try:
                 await asyncio.sleep(prefill_s)
+                if "FAIL" in prompt:  # an error reported inside a 200 stream, as vLLM and llama.cpp do
+                    yield f"data: {json.dumps({'error': {'message': 'context length exceeded', 'code': 400}})}\n\n"
+                    return
                 for i in range(n):
-                    chunk = {"choices": [{"index": 0, "delta": {"content": f"t{i} "}}]}
+                    finish = ("length" if body.get("ignore_eos") else "stop") if i == n - 1 else None
+                    chunk = {"choices": [{"index": 0, "delta": {"content": f"t{i} "}, "finish_reason": finish}]}
                     yield f"data: {json.dumps(chunk)}\n\n"
                     await asyncio.sleep(token_s)
                 usage = {"prompt_tokens": 600, "completion_tokens": n, "total_tokens": 600 + n}

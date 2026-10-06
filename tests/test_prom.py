@@ -15,8 +15,13 @@ vllm:time_to_first_token_seconds_bucket{le="+Inf",engine="0"} 12.0
 vllm:some_gauge NaN
 """
 
-LLAMACPP = """# HELP llamacpp:kv_cache_usage_ratio KV-cache usage. 1 means 100 percent usage.
-llamacpp:kv_cache_usage_ratio 0.25
+# Current llama.cpp server output: no KV cache usage metric any more
+LLAMACPP = """# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.
+# TYPE llamacpp:prompt_tokens_total counter
+llamacpp:prompt_tokens_total 18230
+llamacpp:tokens_predicted_total 9472
+llamacpp:prompt_tokens_seconds 2210.4
+llamacpp:predicted_tokens_seconds 96.1
 llamacpp:requests_processing 2
 llamacpp:requests_deferred 0
 """
@@ -44,9 +49,10 @@ def test_summarize_vllm():
     }
 
 
-def test_summarize_llamacpp_and_old_vllm_name():
+def test_summarize_llamacpp_and_older_metric_names():
     s = prom.summarize(prom.parse(LLAMACPP))
-    assert s["kv_cache_usage"] == 0.25 and s["requests_running"] == 2 and s["preemptions_total"] is None
-    assert "cache_config" not in s
-    old = prom.summarize(prom.parse('vllm:gpu_cache_usage_perc{model_name="m"} 0.9'))
-    assert old["kv_cache_usage"] == 0.9
+    assert s["kv_cache_usage"] is None and s["requests_running"] == 2 and s["requests_waiting"] == 0
+    assert s["preemptions_total"] is None and "cache_config" not in s
+    # names used by older releases still parse
+    assert prom.summarize(prom.parse('vllm:gpu_cache_usage_perc{model_name="m"} 0.9'))["kv_cache_usage"] == 0.9
+    assert prom.summarize(prom.parse("llamacpp:kv_cache_usage_ratio 0.25"))["kv_cache_usage"] == 0.25

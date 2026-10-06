@@ -13,7 +13,8 @@ from fastmcp import FastMCP
 from . import prom, report
 from .backends import health, load_backends
 from .bench import run_benchmark
-from .gpu import gpu_snapshot
+from .gguf_layout import estimate_layout, read_gguf
+from .gpu import default_gpu_gib, gpu_snapshot
 from .models import PRESETS, get_model
 from .planner import VLLM_KV_BYTES, kv_dtype_table, plan_llamacpp, plan_vllm
 
@@ -53,33 +54,46 @@ def plan_vllm_deployment(
     model: str,
     weights_gib: float,
     max_model_len: int = 8192,
-    gpu_gib: float = 16.0,
+    gpu_gib: float | None = None,
     gpu_memory_utilization: float = 0.90,
     kv_cache_dtype: str = "auto",
     overhead_gib: float = 1.5,
 ) -> dict:
     """Predict how many tokens of KV cache vLLM will allocate and how many full-length sequences fit.
-    weights_gib: size of the checkpoint on disk. kv_cache_dtype: one of auto, float16, bfloat16, fp8."""
+    weights_gib: size of the checkpoint on disk. kv_cache_dtype: one of auto, float16, bfloat16, fp8.
+    gpu_gib defaults to the GPU's total memory (NVML)."""
     if kv_cache_dtype not in VLLM_KV_BYTES:
         raise ValueError(f"kv_cache_dtype must be one of {sorted(VLLM_KV_BYTES)}")
+    gpu = gpu_gib if gpu_gib is not None else default_gpu_gib("total")[0]
     return plan_vllm(
-        get_model(model), gpu_gib, weights_gib, max_model_len, gpu_memory_utilization, kv_cache_dtype, overhead_gib
+        get_model(model), gpu, weights_gib, max_model_len, gpu_memory_utilization, kv_cache_dtype, overhead_gib
     ).as_dict()
 
 
 @mcp.tool
 def plan_llamacpp_offload(
-    model: str,
-    gguf_gib: float,
+    gguf_path: str | None = None,
+    model: str | None = None,
+    gguf_gib: float | None = None,
     ctx: int = 8192,
-    gpu_gib: float = 16.0,
+    gpu_gib: float | None = None,
     cache_type_k: str = "f16",
     cache_type_v: str = "f16",
     reserve_gib: float = 1.0,
 ) -> dict:
-    """Largest -ngl (layers on GPU) for a GGUF model, with the VRAM it will use. Works for models
-    bigger than VRAM: the remaining layers run on the CPU."""
-    return plan_llamacpp(get_model(model), gguf_gib, ctx, gpu_gib, cache_type_k, cache_type_v, reserve_gib).as_dict()
+    """Largest -ngl (output head + last N-1 blocks on GPU) for a GGUF model, with its VRAM estimate.
+    Works for models bigger than VRAM: the remaining blocks run on the CPU. Give gguf_path for exact
+    tensor sizes, or model + gguf_gib for an estimate. gpu_gib defaults to free VRAM (NVML)."""
+    if gguf_path:
+        layout = read_gguf(gguf_path)
+        spec = get_model(model) if model else layout.spec
+    elif model and gguf_gib:
+        spec = get_model(model)
+        layout = estimate_layout(spec, int(gguf_gib * 1024**3))
+    else:
+        raise ValueError("pass gguf_path, or model and gguf_gib")
+    gpu = gpu_gib if gpu_gib is not None else default_gpu_gib("free")[0]
+    return plan_llamacpp(spec, layout, ctx, gpu, cache_type_k, cache_type_v, reserve_gib).as_dict()
 
 
 @mcp.tool

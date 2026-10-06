@@ -28,8 +28,21 @@ def test_stream_chat_measures_ttft_and_tokens(server):
 
     ok, bad = asyncio.run(go())
     assert ok.ok and ok.output_tokens == 10 and ok.tokens_from_usage and ok.prompt_tokens == 600
+    assert ok.finish_reason == "length"  # ran to max_tokens because EOS was ignored
     assert 0.02 < ok.ttft_s < ok.e2e_s and ok.tpot_s > 0
     assert not bad.ok and bad.error.startswith("HTTP 404")
+
+
+def test_errors_inside_a_200_stream_and_early_eos(server):
+    async def go():
+        async with httpx.AsyncClient(base_url=server.url + "/v1") as c:
+            err = await stream_chat(c, "fake/qwen-7b", "FAIL please", 10)
+            eos = await stream_chat(c, "fake/qwen-7b", "hi", 10, ignore_eos=False)
+        return err, eos
+
+    err, eos = asyncio.run(go())
+    assert not err.ok and "context length exceeded" in err.error
+    assert eos.ok and eos.output_tokens == 5 and eos.finish_reason == "stop"
 
 
 def test_benchmark_levels_metrics_and_gpu(server, nvml):
@@ -53,6 +66,8 @@ def test_benchmark_levels_metrics_and_gpu(server, nvml):
     for lv in (one, eight):
         assert lv["errors"] == 0 and lv["requests"] == 8 and lv["output_tokens"] == 160 and lv["tokens_from_usage"]
         assert lv["ttft_p50_ms"] <= lv["ttft_p95_ms"] and lv["peak_vram_gib"] and lv["peak_power_w"] == 250
+        assert lv["mean_output_tokens"] == 20 and lv["mean_prompt_tokens"] == 600
+        assert lv["finish_reasons"] == {"length": 8}
     assert eight["throughput_tok_s"] > 2 * one["throughput_tok_s"]  # batching pays off
     assert eight["peak_kv_cache_usage"] > one["peak_kv_cache_usage"]
     assert one["preemptions"] == 0 and eight["preemptions"] > 0  # 8 > the fake cache's 4 slots

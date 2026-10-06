@@ -16,6 +16,8 @@ def _run(label: str, started: str, tput: float, cache: dict | None = None) -> di
         "peak_vram_gib": 14.1,
         "peak_kv_cache_usage": 0.37,
         "preemptions": 0.0,
+        "mean_prompt_tokens": 548.0,
+        "mean_output_tokens": 256.0,
     }
     return {
         "label": label,
@@ -44,22 +46,27 @@ def test_report_keeps_latest_run_per_label(tmp_path):
     runs = report.load_all(tmp_path)
     assert [r["label"] for r in runs] == ["llamacpp-q8kv", "vllm-fp16kv"]
     md = report.write_markdown(tmp_path).read_text()
-    assert "| vllm-fp16kv | Qwen/Qwen2.5-7B-Instruct-AWQ | 4 | 410 | 80 / 140 | 11.2 | 14.1 | 37% | 0 | 0/32 |" in md
+    assert (
+        "| vllm-fp16kv | Qwen/Qwen2.5-7B-Instruct-AWQ | 4 | 548 / 256 [512 / 256] | 410 "
+        "| 80 / 140 | 11.2 | 14.1 | 37% | 0 | 0/32 |" in md
+    )
     assert "| vllm-fp16kv | auto | 9,011 | 144,176 |" in md
     assert "RTX 5070 Ti" in md
     assert "No runs yet" in report.markdown([])
 
 
 def test_cli_plans(capsys, tmp_path):
+    from tests.conftest import make_gguf
+
     main(["plan", "kv", "--model", "llama-3.1-8b", "--tokens", "8192"])
     assert "128.0" in capsys.readouterr().out
     main(["plan", "vllm", "--model", "qwen2.5-7b", "--weights-gib", "5.2", "--max-model-len", "32768"])
+    out = capsys.readouterr().out  # no GPU in CI: falls back to 16 GiB and says so
+    assert "no NVML" in out and "144,176" in out and "fp8 would hold" in out
+    main(["plan", "llamacpp", "--gguf-path", str(make_gguf(tmp_path / "m.gguf")), "--gpu-gib", "8", "-ctk", "q8_0"])
     out = capsys.readouterr().out
-    assert "kv_tokens" in out and "144,176" in out and "fp8 would hold" in out
-    gguf = tmp_path / "m.gguf"
-    with open(gguf, "wb") as f:
-        f.truncate(int(18.5 * 1024**3))  # sparse file: size without the disk use
-    main(["plan", "llamacpp", "--model", "qwen2.5-32b", "--gguf-path", str(gguf), "-ctk", "q8_0", "-ctv", "q8_0"])
-    assert "-ngl" in capsys.readouterr().out
+    assert "layout_source" in out and "gguf" in out and "-ngl 99" in out
+    main(["plan", "llamacpp", "--model", "qwen2.5-32b", "--gguf-gib", "18.5", "--gpu-gib", "15.5"])
+    assert "system RAM" in capsys.readouterr().out
     main(["gpu"])
     assert isinstance(json.loads(capsys.readouterr().out), dict)

@@ -10,7 +10,9 @@ parallel workers and measures what users feel and what the GPU pays:
   fill and preemptions (vLLM evicting sequences because the cache ran out)
 
 Every prompt starts with a unique request number so prefix caching can't make a
-repeated prompt look free.
+repeated prompt look free, and generation ignores end-of-sequence by default so every
+request produces exactly max_tokens tokens on every server (different quantizations
+would otherwise stop at different lengths and make latencies incomparable).
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ class RequestResult:
     output_tokens: int = 0
     prompt_tokens: int | None = None
     tokens_from_usage: bool = False
+    finish_reason: str | None = None
     error: str | None = None
 
     @property
@@ -64,7 +67,9 @@ class RequestResult:
         return (self.e2e_s - self.ttft_s) / (self.output_tokens - 1)
 
 
-async def stream_chat(client: httpx.AsyncClient, model: str, prompt: str, max_tokens: int) -> RequestResult:
+async def stream_chat(
+    client: httpx.AsyncClient, model: str, prompt: str, max_tokens: int, ignore_eos: bool = True
+) -> RequestResult:
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -73,10 +78,13 @@ async def stream_chat(client: httpx.AsyncClient, model: str, prompt: str, max_to
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if ignore_eos:
+        payload["ignore_eos"] = True  # vLLM and llama.cpp extension; Ollama ignores unknown fields
     t0 = time.perf_counter()
     first: float | None = None
     chunks = 0
     usage: dict | None = None
+    finish: str | None = None
     try:
         async with client.stream("POST", "/chat/completions", json=payload, timeout=300) as resp:
             if resp.status_code != 200:
@@ -89,9 +97,14 @@ async def stream_chat(client: httpx.AsyncClient, model: str, prompt: str, max_to
                 if data == "[DONE]":
                     break
                 obj = json.loads(data)
+                if obj.get("error") or obj.get("object") == "error":  # servers report failures mid-stream
+                    err = obj.get("error", obj)
+                    msg = err.get("message", err) if isinstance(err, dict) else err
+                    return RequestResult(False, time.perf_counter() - t0, error=f"stream error: {msg}"[:200])
                 if obj.get("usage"):
                     usage = obj["usage"]
                 for choice in obj.get("choices") or []:
+                    finish = choice.get("finish_reason") or finish
                     delta = choice.get("delta") or {}
                     # reasoning models stream their thinking in a separate field; it's still decode work
                     if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
@@ -102,13 +115,17 @@ async def stream_chat(client: httpx.AsyncClient, model: str, prompt: str, max_to
         return RequestResult(False, time.perf_counter() - t0, error=f"{type(exc).__name__}: {exc}"[:200])
     end = time.perf_counter()
     from_usage = bool(usage and usage.get("completion_tokens"))
+    tokens = usage["completion_tokens"] if from_usage else chunks
+    if tokens == 0 or first is None:
+        return RequestResult(False, end - t0, error="stream ended without generating any tokens")
     return RequestResult(
         ok=True,
         e2e_s=end - t0,
-        ttft_s=(first - t0) if first else None,
-        output_tokens=usage["completion_tokens"] if from_usage else chunks,
+        ttft_s=first - t0,
+        output_tokens=tokens,
         prompt_tokens=(usage or {}).get("prompt_tokens"),
         tokens_from_usage=from_usage,
+        finish_reason=finish,
     )
 
 
@@ -141,6 +158,9 @@ class LevelResult:
     e2e_p95_s: float | None
     output_tokens: int
     tokens_from_usage: bool
+    mean_output_tokens: float | None = None
+    mean_prompt_tokens: float | None = None  # as the server counted them, chat template included
+    finish_reasons: dict[str, int] = field(default_factory=dict)
     peak_vram_gib: float | None = None
     mean_gpu_util_pct: float | None = None
     peak_power_w: float | None = None
@@ -212,6 +232,7 @@ async def run_level(
     metrics: MetricsPoller,
     sampler: GpuSampler,
     offset: int = 0,
+    ignore_eos: bool = True,
 ) -> LevelResult:
     queue: asyncio.Queue[str] = asyncio.Queue()
     for p in make_prompts(n_requests, prompt_tokens, offset):
@@ -224,7 +245,7 @@ async def run_level(
                 prompt = queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
-            results.append(await stream_chat(client, model, prompt, max_tokens))
+            results.append(await stream_chat(client, model, prompt, max_tokens, ignore_eos))
 
     sampler.start()
     async with metrics:
@@ -236,6 +257,10 @@ async def run_level(
     ok = [r for r in results if r.ok]
     out_tokens = sum(r.output_tokens for r in ok)
     errors = [r for r in results if not r.ok]
+    prompt_counts = [r.prompt_tokens for r in ok if r.prompt_tokens]
+    finishes: dict[str, int] = {}
+    for r in ok:
+        finishes[r.finish_reason or "unknown"] = finishes.get(r.finish_reason or "unknown", 0) + 1
     return LevelResult(
         concurrency=concurrency,
         requests=len(results),
@@ -251,6 +276,9 @@ async def run_level(
         e2e_p95_s=_r(percentile([r.e2e_s for r in ok], 95), 1, 2),
         output_tokens=out_tokens,
         tokens_from_usage=bool(ok) and all(r.tokens_from_usage for r in ok),
+        mean_output_tokens=round(out_tokens / len(ok), 1) if ok else None,
+        mean_prompt_tokens=round(sum(prompt_counts) / len(prompt_counts), 1) if prompt_counts else None,
+        finish_reasons=finishes,
         peak_vram_gib=gpu.peak_memory_gib,
         mean_gpu_util_pct=gpu.mean_utilization_pct,
         peak_power_w=gpu.peak_power_w,
@@ -268,6 +296,7 @@ class BenchResult:
     started_at: str
     prompt_tokens: int
     max_tokens: int
+    ignore_eos: bool
     gpu: dict | None
     server: dict
     levels: list[LevelResult] = field(default_factory=list)
@@ -288,6 +317,7 @@ async def run_benchmark(
     sampler_factory=GpuSampler,
     nvml=None,
     metrics_interval: float = 0.5,
+    ignore_eos: bool = True,
 ) -> BenchResult:
     async with httpx.AsyncClient(base_url=backend.base_url, transport=transport) as client:
         model = backend.model or await discover_model(client)
@@ -301,6 +331,7 @@ async def run_benchmark(
             started_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             prompt_tokens=prompt_tokens,
             max_tokens=max_tokens,
+            ignore_eos=ignore_eos,
             gpu=gpu_snapshot(nvml=nvml),
             server=server,
         )
@@ -316,6 +347,7 @@ async def run_benchmark(
                 MetricsPoller(client, backend.metrics_url, metrics_interval),
                 sampler_factory(nvml=nvml) if nvml is not None else sampler_factory(),
                 offset,
+                ignore_eos,
             )
             result.levels.append(level)
             offset += requests_per_level

@@ -8,6 +8,8 @@ from pathlib import Path
 import httpx
 import yaml
 
+from .paths import backends_file
+
 DEFAULTS = {
     "vllm": {
         "kind": "vllm",
@@ -43,7 +45,7 @@ class Backend:
 def load_backends(path: str | Path | None = None) -> dict[str, Backend]:
     """Built-in defaults, overridden by configs/backends.yaml (or the given file) when present."""
     merged = {k: dict(v) for k, v in DEFAULTS.items()}
-    candidate = Path(path) if path else Path("configs/backends.yaml")
+    candidate = Path(path) if path else backends_file()
     if candidate.exists():
         for name, cfg in (yaml.safe_load(candidate.read_text()) or {}).get("backends", {}).items():
             merged.setdefault(name, {}).update(cfg or {})

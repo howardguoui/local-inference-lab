@@ -59,3 +59,27 @@ class FakeNvml:
 @pytest.fixture
 def nvml():
     return FakeNvml()
+
+
+def make_gguf(path, n_layers: int = 3, vocab: int = 100, hidden: int = 64, tied: bool = False):
+    """A tiny but real GGUF file: qwen2 metadata, token embeddings, blocks of growing size, output head."""
+    import numpy as np
+    from gguf import GGUFWriter
+
+    w = GGUFWriter(str(path), "qwen2")
+    w.add_block_count(n_layers)
+    w.add_context_length(4096)
+    w.add_embedding_length(hidden)
+    w.add_head_count(4)
+    w.add_head_count_kv(2)
+    w.add_tensor("token_embd.weight", np.zeros((vocab, hidden), dtype=np.float16))
+    for i in range(n_layers):
+        w.add_tensor(f"blk.{i}.attn_q.weight", np.zeros((hidden, hidden * (i + 1)), dtype=np.float16))
+    w.add_tensor("output_norm.weight", np.zeros((hidden,), dtype=np.float32))
+    if not tied:
+        w.add_tensor("output.weight", np.zeros((vocab, hidden), dtype=np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    return path

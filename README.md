@@ -5,7 +5,8 @@ Serve, size and benchmark open LLMs on one consumer GPU (built on an RTX 5070 Ti
 - **Three servers, one harness.** vLLM, llama.cpp and Ollama run from one `docker-compose.yml`; a streaming
   load generator measures each one on the same prompts at rising concurrency.
 - **VRAM planning before launch.** A planner predicts how much KV cache vLLM will allocate, how many full-length
-  sequences fit, and how many layers of a too-big GGUF model llama.cpp can keep on the GPU (`-ngl`).
+  sequences fit, and how many blocks of a too-big GGUF model llama.cpp can keep on the GPU (`-ngl`), reading
+  exact tensor sizes from the GGUF file.
 - **GPU and server telemetry.** NVML sampling (peak VRAM, utilization, power) plus each server's Prometheus
   metrics (KV cache fill, preemptions, the cache vLLM actually allocated) recorded with every run.
 - **An MCP server for agents.** The same tools, exposed over the Model Context Protocol (FastMCP), so Claude Code
@@ -38,22 +39,35 @@ flowchart LR
 | TTFT p50 / p95 | Queueing plus prefill: what a user waits before the first word |
 | TPOT p50 | Decode speed per stream once it has started |
 | Peak VRAM, GPU utilization, power | From NVML, sampled every 250 ms during each level |
-| Peak KV cache fill, preemptions | From the server's `/metrics`: a full cache makes vLLM evict and recompute sequences |
+| Peak KV cache fill, preemptions | From vLLM's `/metrics`: a full cache makes vLLM evict and recompute sequences. Current llama.cpp and Ollama don't publish a KV fill metric |
 | KV blocks vLLM allocated | Read from `vllm:cache_config_info` and compared with the planner's prediction |
 
 Every prompt starts with a unique request number, so prefix caching can't make repeated prompts look free.
+Generation ignores end-of-sequence (`ignore_eos`), so every request on every server produces exactly
+`--max-tokens` tokens; the report shows the measured prompt and output token counts per row to prove it.
+Mid-stream errors (servers send them inside a 200 response) and empty completions count as failures.
 
 ## Results
 
 Run `scripts/run_matrix.sh` on the GPU machine; it benchmarks each config in turn and writes
 `results/latest.md` (one row per server config and concurrency level) plus a JSON file per run.
-Configs: vLLM with FP16 and FP8 KV cache, llama.cpp with f16 and q8_0 KV cache, Ollama, and optionally
-Qwen2.5-32B through llama.cpp with partial GPU offload.
+
+| Server configs | Scenarios |
+| --- | --- |
+| vLLM, FP16 and FP8 KV cache (Qwen2.5-7B AWQ) | **chat:** 512-token prompts, 256 output tokens, concurrency 1 / 4 / 16 |
+| llama.cpp, f16 and q8_0 KV cache (Qwen2.5-7B Q4_K_M) | **long:** 4,096-token prompts, 256 output tokens, concurrency 8 / 16 / 32 / 48, enough KV demand (~210k tokens) to overflow vLLM's FP16 cache and show what FP8 buys |
+| Ollama (qwen2.5:7b-instruct, Q4_K_M) | |
+| Optional: Qwen2.5-32B Q4_K_M through llama.cpp with the planner's `-ngl` | chat, concurrency 1 / 2 |
+
+The engines are not configured identically, and the table should be read with that in mind: vLLM batches up to
+64 sequences, while llama.cpp and Ollama run 8 parallel slots, so above concurrency 8 their extra requests queue
+and show up as TTFT. vLLM serves AWQ 4-bit weights, the others GGUF Q4_K_M.
 
 ## The planner
 
-KV cache per token = 2 (K and V) × layers × KV heads × head dim × bytes per value. Grouped-query attention is why
-Qwen2.5-7B (4 KV heads for 28 query heads) needs less than half the cache of Llama 3.1 8B:
+KV cache per token = 2 (K and V) × layers × KV heads × head dim × bytes per value. Both models below use
+grouped-query attention; Qwen2.5-7B needs 44% of Llama 3.1 8B's cache per token because it has 4 KV heads instead
+of 8 and 28 layers instead of 32 (0.5 × 0.875):
 
 ```
 $ inference-lab plan kv --model qwen2.5-7b --tokens 32768
@@ -62,9 +76,16 @@ qwen2.5-7b: 28 layers, 4 KV heads x 128 dims (GQA 7:1), one 32,768-token sequenc
   engine     dtype     KiB/token      GiB
   vllm       float16        56.0     1.75
   vllm       fp8            28.0    0.875
+  llama.cpp  f32           112.0      3.5
   llama.cpp  f16            56.0     1.75
   llama.cpp  q8_0           29.8     0.93
-  llama.cpp  q4_0           15.8    0.492
+  llama.cpp  q5_1           21.0    0.656
+  llama.cpp  q5_0           19.2    0.602
+  llama.cpp  q4_1           17.5    0.547
+  llama.cpp  q4_0           15.8    0.492      (iq4_nl is the same size)
+
+$ inference-lab plan kv --model llama-3.1-8b --tokens 32768
+  vllm       float16       128.0      4.0
 ```
 
 **vLLM:** it claims `--gpu-memory-utilization` × VRAM, loads the weights, reserves activation and CUDA-graph
@@ -72,7 +93,7 @@ memory, and splits the rest into 16-token KV blocks. The plan predicts the block
 real one so the two can be compared.
 
 ```
-$ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 32768
+$ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 32768 --gpu-gib 16
   kv_budget_gib              7.7
   kv_tokens                  144,176
   kv_blocks                  9,011
@@ -80,21 +101,28 @@ $ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 3
   --kv-cache-dtype fp8 would hold about 288,352 tokens (8 full-length sequences).
 ```
 
-**llama.cpp and models bigger than VRAM:** `-ngl N` keeps the first N layers (weights and their KV cache) on the
-GPU and runs the rest on the CPU. The planner finds the largest N that fits:
+**llama.cpp and models bigger than VRAM:** with `-ngl N`, llama.cpp puts the output head on the GPU first, then
+the **last** N-1 transformer blocks with their KV cache; the first blocks and the token embeddings stay in system
+RAM ([`llama-model.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/src/llama-model.cpp), where
+`i_gpu_start = n_layer + 1 - ngl`). The planner reads each tensor's size from the GGUF file
+(`--gguf-path`) and finds the largest N that fits; with only a file size it estimates the split from the model's
+vocabulary and hidden size. Recent llama.cpp can choose N itself (`--fit`); the planner shows the arithmetic.
 
 ```
-$ inference-lab plan llamacpp --model qwen2.5-32b --gguf-gib 18.5 --ctx 8192
-  gpu_layers             47
-  total_layers           65
-  vram_estimate_gib      15.85
-  Offload 47 of 65 layers (-ngl 47); the rest run on the CPU, so generation speed is bound by
-  system RAM bandwidth. A quantized KV cache (-ctk q8_0 -ctv q8_0, needs -fa on) frees room for more GPU layers.
+$ inference-lab plan llamacpp --model qwen2.5-32b --gguf-gib 18.5 --ctx 8192 --gpu-gib 15.5
+  ngl                46
+  blocks_on_gpu      45
+  total_blocks       64
+  vram_estimate_gib  15.23
+  cpu_weights_gib    5.67
+  -ngl 46: the output head and the last 45 of 64 blocks on the GPU, 5.7 GiB of weights in system RAM.
+  Generation speed is then bound by RAM bandwidth. A quantized KV cache (-ctk q8_0 -ctv q8_0, with -fa on)
+  frees room for more blocks.
 ```
 
-The overhead terms (activations, CUDA graphs, llama.cpp's compute buffer, a desktop's display) are estimates
-with conservative defaults, exposed as flags. Checkpoint sizes come from the files themselves
-(`--weights-path`, `--gguf-path`).
+The overhead terms (activations, CUDA graphs, llama.cpp's compute buffer) are estimates with conservative
+defaults, exposed as flags. Without `--gpu-gib`, plans use NVML: total VRAM for vLLM (it sizes from total memory),
+free VRAM for llama.cpp (it must fit beside whatever else is running, such as a Windows desktop).
 
 ## Run it
 
@@ -110,26 +138,39 @@ docker compose --profile vllm down
 scripts/run_matrix.sh                                # every config, then results/latest.md
 ```
 
-Windows: run the scripts from WSL 2 with Docker Desktop's GPU support enabled.
+Windows: run the scripts from WSL 2 with Docker Desktop's GPU support enabled, and set **CUDA - Sysmem Fallback
+Policy** to *Prefer No Sysmem Fallback* in the NVIDIA Control Panel while benchmarking. Otherwise the driver spills
+VRAM overflow into system RAM instead of failing, and an over-sized config runs slowly but looks valid.
 
 ## Use it from Claude (MCP)
 
 ```bash
-claude mcp add inference-lab -- inference-lab mcp     # Claude Code
+claude mcp add inference-lab -e INFERENCE_LAB_HOME=/path/to/local-inference-lab -- inference-lab mcp
 ```
 
 Claude Desktop (`claude_desktop_config.json`):
 
 ```json
-{ "mcpServers": { "inference-lab": { "command": "inference-lab", "args": ["mcp"] } } }
+{
+  "mcpServers": {
+    "inference-lab": {
+      "command": "inference-lab",
+      "args": ["mcp"],
+      "env": { "INFERENCE_LAB_HOME": "/path/to/local-inference-lab" }
+    }
+  }
+}
 ```
+
+`INFERENCE_LAB_HOME` tells the server where `configs/backends.yaml` and `results/` live, since MCP clients start it
+from their own working directory. An editable install (`pip install -e .`) finds the repo without it.
 
 | Tool | Does |
 | --- | --- |
 | `gpu_status` | VRAM used and free, utilization, temperature, power |
 | `kv_cache_size`, `list_models` | KV cache per storage type for a model and context length |
 | `plan_vllm_deployment` | KV tokens and blocks vLLM will allocate; whether `max_model_len` fits |
-| `plan_llamacpp_offload` | Largest `-ngl` for a GGUF model and its VRAM estimate |
+| `plan_llamacpp_offload` | Largest `-ngl` for a GGUF file (exact tensor sizes) and its VRAM estimate |
 | `list_backends`, `backend_metrics` | Which servers are up; live KV cache fill, queue depth, preemptions |
 | `run_benchmark` | Benchmarks a server and saves the run; results also readable as `lab://results/latest` |
 
@@ -139,16 +180,17 @@ Claude Desktop (`claude_desktop_config.json`):
 pytest
 ```
 
-The planner math (checked against published per-token KV sizes), the Prometheus parser on vLLM and llama.cpp
-output, the load generator against a fake streaming OpenAI-compatible server (TTFT, tokens, KV cache fill,
-preemptions under overload), the NVML sampler with a fake driver, and the MCP server both in memory and as a stdio
-subprocess. CI runs them on every push and pull request.
+The planner math (checked against published per-token KV sizes and llama.cpp's layer placement), GGUF reading on
+real files written with the `gguf` library, the Prometheus parser on current vLLM and llama.cpp output, the load
+generator against a fake streaming OpenAI-compatible server (TTFT, fixed-length output, mid-stream errors, KV cache
+fill and preemptions under overload), the NVML sampler with a fake driver, and the MCP server both in memory and
+as a stdio subprocess. CI runs them on pushes to `main` and on pull requests.
 
 ## Layout
 
 ```
-src/inference_lab/  models.py · planner.py · gpu.py (NVML) · prom.py (/metrics) · bench.py · report.py
-                    backends.py · mcp_server.py (FastMCP) · cli.py
+src/inference_lab/  models.py · gguf_layout.py · planner.py · gpu.py (NVML) · prom.py (/metrics) · bench.py
+                    report.py · backends.py · paths.py · mcp_server.py (FastMCP) · cli.py
 configs/            backends.yaml
 scripts/            get_models.sh · run_matrix.sh
 docker-compose.yml  vllm · llamacpp · ollama profiles

@@ -41,8 +41,10 @@ def test_planning_tools():
         )
     ).data
     assert plan["fits"] and plan["kv_bytes_per_token"] == 28672
-    off = asyncio.run(_call("plan_llamacpp_offload", {"model": "qwen2.5-32b", "gguf_gib": 18.5})).data
-    assert 0 < off["gpu_layers"] < off["total_layers"]
+    off = asyncio.run(_call("plan_llamacpp_offload", {"model": "qwen2.5-32b", "gguf_gib": 18.5, "gpu_gib": 15.5})).data
+    assert 1 < off["ngl"] < off["total_blocks"] and off["layout_source"] == "estimate"
+    missing = asyncio.run(_call("plan_llamacpp_offload", {"model": "qwen2.5-32b"}))
+    assert missing.is_error
     bad = asyncio.run(
         _call("plan_vllm_deployment", {"model": "qwen2.5-7b", "weights_gib": 5, "kv_cache_dtype": "int3"})
     )

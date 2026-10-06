@@ -1,14 +1,17 @@
 import pytest
 
+from inference_lab.gguf_layout import GgufLayout, estimate_layout, read_gguf
 from inference_lab.models import PRESETS, ModelSpec, get_model
 from inference_lab.planner import (
     GIB,
     LLAMACPP_KV_BYTES,
+    _gpu_bytes,
     kv_bytes_per_token,
     kv_dtype_table,
     plan_llamacpp,
     plan_vllm,
 )
+from tests.conftest import make_gguf
 
 
 def test_kv_bytes_per_token_matches_published_figures():
@@ -54,21 +57,54 @@ def test_vllm_plan_reports_when_a_sequence_cannot_fit():
     assert not p.fits and "refuse to start" in p.advice and p.kv_budget_gib == 0
 
 
+def test_ngl_puts_the_output_head_first_then_the_last_blocks():
+    # llama-model.cpp: i_gpu_start = n_layer + 1 - ngl; index n_layer is the output head
+    layout = GgufLayout(n_layers=4, token_embd_bytes=1000, output_bytes=100, block_bytes=[10, 20, 30, 40])
+    assert _gpu_bytes(layout, 0, kv_block=0) == 0
+    assert _gpu_bytes(layout, 1, kv_block=0) == 100  # output head only
+    assert _gpu_bytes(layout, 2, kv_block=0) == 140  # + the LAST block
+    assert _gpu_bytes(layout, 3, kv_block=5) == 100 + 40 + 30 + 2 * 5  # KV only for blocks on the GPU
+    assert _gpu_bytes(layout, 99, kv_block=0) == 200  # token_embd never counts toward VRAM
+
+
 def test_llamacpp_partial_offload_uses_the_largest_ngl_that_fits():
     m = PRESETS["qwen2.5-32b"]
-    p = plan_llamacpp(m, gguf_gib=18.5, ctx=8192, gpu_gib=16)
-    assert not p.full_offload and 0 < p.gpu_layers < p.total_layers
-    assert p.vram_estimate_gib <= 16
-    one_more = (p.gpu_layers + 1) * (p.weights_per_layer_gib + p.kv_per_layer_gib) + p.reserve_gib
-    assert one_more > 16
-    q8 = plan_llamacpp(m, gguf_gib=18.5, ctx=8192, gpu_gib=16, cache_type_k="q8_0", cache_type_v="q8_0")
-    assert q8.gpu_layers >= p.gpu_layers  # a smaller KV cache never costs GPU layers
+    layout = estimate_layout(m, int(18.5 * GIB))
+    assert layout.total_bytes == pytest.approx(18.5 * GIB, rel=0.01)
+    p = plan_llamacpp(m, layout, ctx=8192, gpu_gib=15.5)
+    assert not p.full_offload and 1 < p.ngl < m.n_layers + 1 and p.blocks_on_gpu == p.ngl - 1
+    assert p.vram_estimate_gib <= 15.5
+    kv_block = p.kv_per_block_gib * GIB
+    assert _gpu_bytes(layout, p.ngl + 1, kv_block) / GIB + p.reserve_gib > 15.5  # one more would not fit
+    assert p.cpu_weights_gib > 0 and "system RAM" in p.advice
+    q8 = plan_llamacpp(m, layout, ctx=8192, gpu_gib=15.5, cache_type_k="q8_0", cache_type_v="q8_0")
+    assert q8.ngl >= p.ngl  # a smaller KV cache never costs GPU layers
 
 
 def test_llamacpp_full_offload_returns_ngl_99():
-    p = plan_llamacpp(PRESETS["qwen2.5-7b"], gguf_gib=4.36, ctx=32768, gpu_gib=16)
-    assert p.full_offload and p.gpu_layers == 99 and "fits" in p.advice
-    assert p.kv_total_gib == pytest.approx(1.75)
+    m = PRESETS["qwen2.5-7b"]
+    p = plan_llamacpp(m, estimate_layout(m, int(4.36 * GIB)), ctx=32768, gpu_gib=15.5)
+    assert p.full_offload and p.ngl == 99 and p.blocks_on_gpu == 28 and "fits" in p.advice
+    assert p.kv_per_block_gib * 28 == pytest.approx(1.75, rel=1e-3)
+
+
+def test_read_gguf_gets_exact_sizes_and_model_shape(tmp_path):
+    layout = read_gguf(make_gguf(tmp_path / "m.gguf"))
+    assert layout.source == "gguf" and layout.n_layers == 3
+    assert layout.token_embd_bytes == 100 * 64 * 2 and layout.output_bytes == 100 * 64 * 4
+    assert layout.block_bytes == [64 * 64 * 2 * (i + 1) for i in range(3)]
+    assert layout.other_bytes == 64 * 4  # output_norm
+    spec = layout.spec
+    assert (spec.n_heads, spec.n_kv_heads, spec.head_dim, spec.vocab_size, spec.tie_embeddings) == (
+        4,
+        2,
+        16,
+        100,
+        False,
+    )
+    assert get_model(str(tmp_path / "m.gguf")).n_kv_heads == 2
+    tied = read_gguf(make_gguf(tmp_path / "t.gguf", tied=True))
+    assert tied.spec.tie_embeddings and tied.output_bytes == tied.token_embd_bytes  # GPU keeps its own copy
 
 
 def test_kv_dtype_table_drops_duplicates():

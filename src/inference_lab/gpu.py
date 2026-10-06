@@ -136,3 +136,13 @@ class GpuSampler:
             mean_utilization_pct=round(sum(self.util) / len(self.util), 1) if self.util else None,
             peak_power_w=round(max(self.power), 1) if self.power else None,
         )
+
+
+def default_gpu_gib(which: str, fallback: float = 16.0, nvml=None) -> tuple[float, str]:
+    """VRAM to plan against: "total" (vLLM sizes from total memory) or "free" (llama.cpp
+    must fit next to whatever else is running, such as a Windows desktop)."""
+    snap = gpu_snapshot(nvml=nvml)
+    if not snap:
+        return fallback, f"{fallback} GiB (no NVML; pass --gpu-gib)"
+    key = "memory_total_gib" if which == "total" else "memory_free_gib"
+    return snap[key], f"{snap[key]} GiB {which} on {snap['name']} (NVML)"
