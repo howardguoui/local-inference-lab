@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> None:
         print(report.markdown([result]))
         print(f"Saved {path}; combined table in {report.write_markdown()}")
     elif a.cmd == "report":
-        print(report.write_markdown().read_text())
+        print(report.write_markdown().read_text(encoding="utf-8"))
     elif a.cmd == "mcp":
         from .mcp_server import main as serve
 

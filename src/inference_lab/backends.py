@@ -47,7 +47,7 @@ def load_backends(path: str | Path | None = None) -> dict[str, Backend]:
     merged = {k: dict(v) for k, v in DEFAULTS.items()}
     candidate = Path(path) if path else backends_file()
     if candidate.exists():
-        for name, cfg in (yaml.safe_load(candidate.read_text()) or {}).get("backends", {}).items():
+        for name, cfg in (yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}).get("backends", {}).items():
             merged.setdefault(name, {}).update(cfg or {})
     return {name: Backend(name=name, **cfg) for name, cfg in merged.items()}
 

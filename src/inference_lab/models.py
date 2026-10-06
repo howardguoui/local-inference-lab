@@ -34,7 +34,7 @@ class ModelSpec:
     @classmethod
     def from_hf_config(cls, config: dict | str | Path, name: str | None = None) -> ModelSpec:
         if not isinstance(config, dict):
-            config = json.loads(Path(config).read_text())
+            config = json.loads(Path(config).read_text(encoding="utf-8"))
         cfg = config.get("text_config", config)  # multimodal configs nest the language model
         n_heads = cfg["num_attention_heads"]
         return cls(

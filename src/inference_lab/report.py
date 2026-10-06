@@ -15,7 +15,7 @@ def save(result: dict, results_dir: Path | None = None) -> Path:
     stamp = re.sub(r"[^0-9]", "", result["started_at"])[:12]
     slug = re.sub(r"[^a-zA-Z0-9_.-]+", "-", result["label"]).strip("-")
     path = results_dir / f"{slug}-{stamp}.json"
-    path.write_text(json.dumps(result, indent=2))
+    path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return path
 
 
@@ -24,7 +24,7 @@ def load_all(results_dir: Path | None = None) -> list[dict]:
     results_dir = results_dir or paths.results_dir()
     latest: dict[str, dict] = {}
     for path in sorted(results_dir.glob("*.json")):
-        run = json.loads(path.read_text())
+        run = json.loads(path.read_text(encoding="utf-8"))
         if "levels" in run:
             latest[run["label"]] = run
     return list(latest.values())
@@ -93,5 +93,5 @@ def write_markdown(results_dir: Path | None = None) -> Path:
     results_dir = results_dir or paths.results_dir()
     path = results_dir / "latest.md"
     results_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(markdown(load_all(results_dir)))
+    path.write_text(markdown(load_all(results_dir)), encoding="utf-8")
     return path

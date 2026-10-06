@@ -70,3 +70,22 @@ def test_cli_plans(capsys, tmp_path):
     assert "system RAM" in capsys.readouterr().out
     main(["gpu"])
     assert isinstance(json.loads(capsys.readouterr().out), dict)
+
+
+def test_files_are_utf8_whatever_the_platform_default(tmp_path):
+    # Windows defaults to cp1252, which turned the report's dashes into invalid UTF-8 on GitHub.
+    # -X warn_default_encoding makes any read or write that relies on the default an error.
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; from pathlib import Path; from inference_lab import report;"
+        "from tests.test_report_cli import _run;"
+        "d = Path(sys.argv[1]); report.save(_run('a', '2026-10-06 18:00 UTC', 1.0), d);"
+        "report.write_markdown(d)"
+    )
+    subprocess.run(
+        [sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning", "-c", code, str(tmp_path)],
+        check=True,
+    )
+    assert "–" in (tmp_path / "latest.md").read_bytes().decode("utf-8")
