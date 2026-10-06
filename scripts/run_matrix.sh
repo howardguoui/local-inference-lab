@@ -7,6 +7,7 @@
 #
 #   scripts/run_matrix.sh
 #   OFFLOAD=1 scripts/run_matrix.sh   # adds Qwen2.5-32B with partial GPU offload (run get_models.sh first)
+#   ONLY="vllm llamacpp" scripts/run_matrix.sh   # just these servers (e.g. Ollama already runs on the host's 11434)
 #
 # Note: llama.cpp and Ollama run 8 parallel slots (PARALLEL); at higher concurrency their extra
 # requests queue, which shows up as TTFT. vLLM batches up to 64 sequences (MAX_NUM_SEQS).
@@ -31,6 +32,9 @@ bench() {  # bench <label> <backend> <prompt tokens> <requests per level> <concu
 
 run() {  # run <label> <profile> <base url> [VAR=value ...]
   local label=$1 profile=$2 url=$3; shift 3
+  if [ -n "${ONLY:-}" ] && [[ " $ONLY " != *" $profile "* ]]; then
+    echo "--- $label: skipped (ONLY=$ONLY)"; return
+  fi
   echo "=== $label ==="
   env "$@" docker compose --profile "$profile" up -d
   if wait_ready "$url"; then

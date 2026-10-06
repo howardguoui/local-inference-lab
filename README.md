@@ -138,6 +138,7 @@ inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 docker compose --profile vllm down
 
 scripts/run_matrix.sh                                # every config, then results/latest.md
+ONLY="vllm llamacpp" scripts/run_matrix.sh           # a subset (e.g. Ollama already runs on the host)
 scripts/publish_results.sh                           # run the matrix and push results to GitHub
 ```
 
