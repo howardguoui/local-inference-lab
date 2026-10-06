@@ -1,0 +1,16 @@
+# Servers `inference-lab bench --backend <name>` and the MCP tools can reach.
+# model: omit to use whatever the server lists at /v1/models.
+backends:
+  vllm:
+    kind: vllm
+    base_url: http://localhost:8000/v1
+    metrics_url: http://localhost:8000/metrics
+  llamacpp:
+    kind: llamacpp
+    base_url: http://localhost:8081/v1
+    metrics_url: http://localhost:8081/metrics
+  ollama:
+    kind: ollama
+    base_url: http://localhost:11434/v1
+    metrics_url: null
+    model: qwen2.5:7b-instruct

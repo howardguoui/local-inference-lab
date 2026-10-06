@@ -1,0 +1,62 @@
+# Three inference servers for one 16 GB GPU. Run ONE at a time: each claims most of VRAM.
+#
+#   docker compose --profile vllm up -d                         # http://localhost:8000/v1
+#   KV_DTYPE=fp8 docker compose --profile vllm up -d            # same, FP8 KV cache
+#   docker compose --profile llamacpp up -d                     # http://localhost:8081/v1 (needs models/*.gguf)
+#   CACHE_K=q8_0 CACHE_V=q8_0 docker compose --profile llamacpp up -d
+#   docker compose --profile ollama up -d                       # http://localhost:11434/v1
+#
+# scripts/run_matrix.sh starts each config in turn, benchmarks it and stops it.
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+
+services:
+  vllm:
+    profiles: ["vllm"]
+    <<: *gpu
+    image: vllm/vllm-openai:${VLLM_TAG:-latest}  # Blackwell (RTX 50xx) needs a CUDA 12.8+ build
+    command: >
+      ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      --max-model-len ${MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization ${GPU_UTIL:-0.90}
+      --kv-cache-dtype ${KV_DTYPE:-auto}
+      --max-num-seqs ${MAX_NUM_SEQS:-64}
+      --enable-prefix-caching
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports: ["8000:8000"]
+    ipc: host
+    volumes: [hf-cache:/root/.cache/huggingface]
+
+  llamacpp:
+    profiles: ["llamacpp"]
+    <<: *gpu
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    # -ngl: layers on the GPU (99 = all; use `inference-lab plan llamacpp` for models bigger than VRAM)
+    # -c is the total context shared by the -np parallel slots; quantized V cache needs flash attention
+    command: >
+      -m /models/${GGUF_FILE:-Qwen2.5-7B-Instruct-Q4_K_M.gguf}
+      -ngl ${NGL:-99} -c ${CTX:-32768} -np ${PARALLEL:-8}
+      -ctk ${CACHE_K:-f16} -ctv ${CACHE_V:-f16} -fa on
+      --metrics --host 0.0.0.0 --port 8080
+    ports: ["8081:8080"]
+    volumes: ["./models:/models:ro"]
+
+  ollama:
+    profiles: ["ollama"]
+    <<: *gpu
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_NUM_PARALLEL: ${PARALLEL:-8}
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV:-f16}  # f16, q8_0 or q4_0
+    ports: ["11434:11434"]
+    volumes: [ollama:/root/.ollama]
+
+volumes:
+  hf-cache:
+  ollama:
