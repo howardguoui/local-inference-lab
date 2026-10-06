@@ -10,9 +10,10 @@ parallel workers and measures what users feel and what the GPU pays:
   fill and preemptions (vLLM evicting sequences because the cache ran out)
 
 Every prompt starts with a unique request number so prefix caching can't make a
-repeated prompt look free, and generation ignores end-of-sequence by default so every
-request produces exactly max_tokens tokens on every server (different quantizations
-would otherwise stop at different lengths and make latencies incomparable).
+repeated prompt look free. Generation ignores end-of-sequence by default, so on vLLM and
+llama.cpp every request produces exactly max_tokens tokens (different quantizations would
+otherwise stop at different lengths and make latencies incomparable). Ollama's OpenAI
+endpoint drops the flag; its rows show the real mean output length instead.
 """
 
 from __future__ import annotations
@@ -158,6 +159,7 @@ class LevelResult:
     e2e_p95_s: float | None
     output_tokens: int
     tokens_from_usage: bool
+    max_in_flight: int = 0  # requests actually running at once (capped by the request count)
     mean_output_tokens: float | None = None
     mean_prompt_tokens: float | None = None  # as the server counted them, chat template included
     finish_reasons: dict[str, int] = field(default_factory=dict)
@@ -238,6 +240,7 @@ async def run_level(
     for p in make_prompts(n_requests, prompt_tokens, offset):
         queue.put_nowait(p)
     results: list[RequestResult] = []
+    in_flight = {"now": 0, "max": 0}
 
     async def worker() -> None:
         while True:
@@ -245,7 +248,12 @@ async def run_level(
                 prompt = queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
-            results.append(await stream_chat(client, model, prompt, max_tokens, ignore_eos))
+            in_flight["now"] += 1
+            in_flight["max"] = max(in_flight["max"], in_flight["now"])
+            try:
+                results.append(await stream_chat(client, model, prompt, max_tokens, ignore_eos))
+            finally:
+                in_flight["now"] -= 1
 
     sampler.start()
     async with metrics:
@@ -276,6 +284,7 @@ async def run_level(
         e2e_p95_s=_r(percentile([r.e2e_s for r in ok], 95), 1, 2),
         output_tokens=out_tokens,
         tokens_from_usage=bool(ok) and all(r.tokens_from_usage for r in ok),
+        max_in_flight=in_flight["max"],
         mean_output_tokens=round(out_tokens / len(ok), 1) if ok else None,
         mean_prompt_tokens=round(sum(prompt_counts) / len(prompt_counts), 1) if prompt_counts else None,
         finish_reasons=finishes,
@@ -319,6 +328,11 @@ async def run_benchmark(
     metrics_interval: float = 0.5,
     ignore_eos: bool = True,
 ) -> BenchResult:
+    if requests_per_level < max(concurrency):
+        raise ValueError(
+            f"requests_per_level ({requests_per_level}) is below the top concurrency ({max(concurrency)}); "
+            "that level could never have that many requests in flight. Use at least 2-3x the concurrency."
+        )
     async with httpx.AsyncClient(base_url=backend.base_url, transport=transport) as client:
         model = backend.model or await discover_model(client)
         for p in make_prompts(warmup, prompt_tokens, offset=10_000):  # load weights, build CUDA graphs

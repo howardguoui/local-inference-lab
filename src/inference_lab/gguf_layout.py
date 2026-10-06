@@ -98,7 +98,9 @@ def estimate_layout(model: ModelSpec, file_bytes: int) -> GgufLayout:
     total_params = model.params_b * 1e9 if model.params_b else None
     bytes_per_param = file_bytes / total_params if total_params else 0.6  # ~4.8 bits/weight (Q4_K_M)
     embd = int(vocab_params * bytes_per_param)
-    out = embd
+    # llama.cpp's k-quant mixes keep the output head at Q6_K or better (6.5625 bits/weight),
+    # above a Q4 file's average, so don't let it fall below that
+    out = int(vocab_params * max(bytes_per_param, 6.5625 / 8))
     file_has_output = 0 if model.tie_embeddings else out
     repeat = max(0, file_bytes - embd - file_has_output)
     per_block = repeat // model.n_layers

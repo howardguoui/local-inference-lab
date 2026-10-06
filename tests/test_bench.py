@@ -68,6 +68,7 @@ def test_benchmark_levels_metrics_and_gpu(server, nvml):
         assert lv["ttft_p50_ms"] <= lv["ttft_p95_ms"] and lv["peak_vram_gib"] and lv["peak_power_w"] == 250
         assert lv["mean_output_tokens"] == 20 and lv["mean_prompt_tokens"] == 600
         assert lv["finish_reasons"] == {"length": 8}
+    assert one["max_in_flight"] == 1 and eight["max_in_flight"] == 8
     assert eight["throughput_tok_s"] > 2 * one["throughput_tok_s"]  # batching pays off
     assert eight["peak_kv_cache_usage"] > one["peak_kv_cache_usage"]
     assert one["preemptions"] == 0 and eight["preemptions"] > 0  # 8 > the fake cache's 4 slots
@@ -96,3 +97,11 @@ def test_gpu_sampler_tracks_peak(nvml):
     assert stats.samples >= 5 and stats.peak_memory_gib == 12.0 and stats.mean_utilization_pct == 90
     snap = gpu_snapshot(nvml=nvml)
     assert snap["memory_total_gib"] == 16 and snap["power_w"] == 250 and snap["temperature_c"] == 64
+
+
+def test_refuses_levels_that_could_never_reach_their_concurrency(server):
+    import pytest
+
+    backend = Backend("fake", "vllm", server.url + "/v1", server.url + "/metrics")
+    with pytest.raises(ValueError, match="below the top concurrency"):
+        asyncio.run(run_benchmark(backend, [1, 48], requests_per_level=32))

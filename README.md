@@ -35,6 +35,7 @@ flowchart LR
 
 | Metric | Why it matters |
 | --- | --- |
+| Requests in flight (measured) | Confirms each level really ran at its concurrency |
 | Throughput (output tok/s, all streams) | What batching buys: decode is memory-bound, so serving 16 streams costs little more than 1 |
 | TTFT p50 / p95 | Queueing plus prefill: what a user waits before the first word |
 | TPOT p50 | Decode speed per stream once it has started |
@@ -43,8 +44,9 @@ flowchart LR
 | KV blocks vLLM allocated | Read from `vllm:cache_config_info` and compared with the planner's prediction |
 
 Every prompt starts with a unique request number, so prefix caching can't make repeated prompts look free.
-Generation ignores end-of-sequence (`ignore_eos`), so every request on every server produces exactly
-`--max-tokens` tokens; the report shows the measured prompt and output token counts per row to prove it.
+Generation ignores end-of-sequence (`ignore_eos`), so every request on vLLM and llama.cpp produces exactly
+`--max-tokens` tokens. Ollama's OpenAI endpoint drops that flag, so its requests can stop early; the report shows
+the measured prompt and output token counts on every row, so the difference is visible.
 Mid-stream errors (servers send them inside a 200 response) and empty completions count as failures.
 
 ## Results
@@ -55,7 +57,7 @@ Run `scripts/run_matrix.sh` on the GPU machine; it benchmarks each config in tur
 | Server configs | Scenarios |
 | --- | --- |
 | vLLM, FP16 and FP8 KV cache (Qwen2.5-7B AWQ) | **chat:** 512-token prompts, 256 output tokens, concurrency 1 / 4 / 16 |
-| llama.cpp, f16 and q8_0 KV cache (Qwen2.5-7B Q4_K_M) | **long:** 4,096-token prompts, 256 output tokens, concurrency 8 / 16 / 32 / 48, enough KV demand (~210k tokens) to overflow vLLM's FP16 cache and show what FP8 buys |
+| llama.cpp, f16 and q8_0 KV cache (Qwen2.5-7B Q4_K_M) | **long:** 4,096-token prompts, 256 output tokens, concurrency 8 / 16 / 32 / 48 with 144 requests per level: 48 in flight need ~210k tokens of KV cache, more than vLLM's FP16 cache holds, which is where FP8 should pay off |
 | Ollama (qwen2.5:7b-instruct, Q4_K_M) | |
 | Optional: Qwen2.5-32B Q4_K_M through llama.cpp with the planner's `-ngl` | chat, concurrency 1 / 2 |
 
@@ -113,9 +115,9 @@ $ inference-lab plan llamacpp --model qwen2.5-32b --gguf-gib 18.5 --ctx 8192 --g
   ngl                46
   blocks_on_gpu      45
   total_blocks       64
-  vram_estimate_gib  15.23
-  cpu_weights_gib    5.67
-  -ngl 46: the output head and the last 45 of 64 blocks on the GPU, 5.7 GiB of weights in system RAM.
+  vram_estimate_gib  15.28
+  cpu_weights_gib    5.63
+  -ngl 46: the output head and the last 45 of 64 blocks on the GPU, 5.6 GiB of weights in system RAM.
   Generation speed is then bound by RAM bandwidth. A quantized KV cache (-ctk q8_0 -ctv q8_0, with -fa on)
   frees room for more blocks.
 ```

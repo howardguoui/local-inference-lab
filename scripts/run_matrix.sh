@@ -2,8 +2,8 @@
 # Benchmark every server config in turn, one on the GPU at a time, then build results/latest.md.
 # Each config runs two scenarios:
 #   chat  512-token prompts, 256 output tokens, concurrency 1 4 16
-#   long  4096-token prompts, 256 output tokens, concurrency 8 16 32 48: enough KV cache demand
-#         (48 x ~4.4k tokens) to fill vLLM's FP16 cache and show what FP8 buys
+#   long  4096-token prompts, 256 output tokens, concurrency 8 16 32 48, 144 requests per level:
+#         48 in flight x ~4.4k tokens is ~210k tokens of KV cache, more than vLLM's FP16 cache holds
 #
 #   scripts/run_matrix.sh
 #   OFFLOAD=1 scripts/run_matrix.sh   # adds Qwen2.5-32B with partial GPU offload (run get_models.sh first)
@@ -12,7 +12,8 @@
 # requests queue, which shows up as TTFT. vLLM batches up to 64 sequences (MAX_NUM_SEQS).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-REQ="${REQ:-32}"
+REQ="${REQ:-48}"        # chat: requests per level
+LONG_REQ="${LONG_REQ:-144}"  # long: 3 waves at the top concurrency
 
 wait_ready() {  # $1 = base URL; the first vLLM start downloads the model, so allow 20 minutes
   for _ in $(seq 1 240); do
@@ -22,10 +23,10 @@ wait_ready() {  # $1 = base URL; the first vLLM start downloads the model, so al
   return 1
 }
 
-bench() {  # bench <label> <backend> <prompt tokens> <concurrency...>
-  local label=$1 backend=$2 prompt=$3; shift 3
+bench() {  # bench <label> <backend> <prompt tokens> <requests per level> <concurrency...>
+  local label=$1 backend=$2 prompt=$3 requests=$4; shift 4
   inference-lab bench --backend "$backend" --label "$label" --prompt-tokens "$prompt" --max-tokens 256 \
-    --requests "$REQ" --concurrency "$@" || echo "!!! $label: benchmark failed"
+    --requests "$requests" --concurrency "$@" || echo "!!! $label: benchmark failed"
 }
 
 run() {  # run <label> <profile> <base url> [VAR=value ...]
@@ -36,8 +37,8 @@ run() {  # run <label> <profile> <base url> [VAR=value ...]
     if [ "$profile" = ollama ]; then
       docker compose --profile ollama exec ollama ollama pull qwen2.5:7b-instruct
     fi
-    bench "$label-chat" "$profile" 512 1 4 16
-    bench "$label-long" "$profile" 4096 8 16 32 48
+    bench "$label-chat" "$profile" 512 "$REQ" 1 4 16
+    bench "$label-long" "$profile" 4096 "$LONG_REQ" 8 16 32 48
   else
     echo "!!! $label: server never became ready"
     docker compose --profile "$profile" logs --tail 30
@@ -62,7 +63,7 @@ if [ "${OFFLOAD:-0}" = 1 ]; then
     env GGUF_FILE="$(basename "$GGUF")" NGL="$NGL" CTX=8192 PARALLEL=2 CACHE_K=q8_0 CACHE_V=q8_0 \
       docker compose --profile llamacpp up -d
     if wait_ready http://localhost:8081/v1; then
-      bench "llamacpp-32b-ngl$NGL" llamacpp 512 1 2
+      bench "llamacpp-32b-ngl$NGL" llamacpp 512 8 1 2
     fi
     docker compose --profile llamacpp down
   fi
