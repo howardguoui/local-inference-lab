@@ -1,0 +1,119 @@
+{
+  "label": "llamacpp-q8kv-chat",
+  "backend": {
+    "name": "llamacpp",
+    "kind": "llamacpp",
+    "base_url": "http://localhost:8081/v1",
+    "metrics_url": "http://localhost:8081/metrics",
+    "model": null
+  },
+  "model": "/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+  "started_at": "2026-10-07 13:42 UTC",
+  "prompt_tokens": 512,
+  "max_tokens": 256,
+  "ignore_eos": true,
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 5070 Ti",
+    "driver": "617.42",
+    "memory_total_gib": 15.92,
+    "memory_used_gib": 7.68,
+    "memory_free_gib": 8.24,
+    "utilization_pct": 51,
+    "temperature_c": 51.0,
+    "power_w": 41.7,
+    "power_limit_w": 300.0
+  },
+  "server": {
+    "kv_cache_usage": null,
+    "requests_running": 0.0,
+    "requests_waiting": 0.0,
+    "preemptions_total": null,
+    "prefix_cache_hit_rate": null
+  },
+  "levels": [
+    {
+      "concurrency": 1,
+      "requests": 48,
+      "errors": 0,
+      "wall_s": 98.67,
+      "throughput_tok_s": 124.5,
+      "requests_per_s": 0.49,
+      "ttft_p50_ms": 143.3,
+      "ttft_p95_ms": 146.3,
+      "tpot_p50_ms": 7.5,
+      "tpot_p95_ms": 7.53,
+      "e2e_p50_s": 2.06,
+      "e2e_p95_s": 2.07,
+      "output_tokens": 12288,
+      "tokens_from_usage": true,
+      "max_in_flight": 1,
+      "mean_output_tokens": 256.0,
+      "mean_prompt_tokens": 481.8,
+      "finish_reasons": {
+        "length": 48
+      },
+      "peak_vram_gib": 7.68,
+      "mean_gpu_util_pct": 85.3,
+      "peak_power_w": 253.1,
+      "peak_kv_cache_usage": null,
+      "preemptions": null,
+      "first_error": null
+    },
+    {
+      "concurrency": 4,
+      "requests": 48,
+      "errors": 0,
+      "wall_s": 63.69,
+      "throughput_tok_s": 192.9,
+      "requests_per_s": 0.75,
+      "ttft_p50_ms": 385.3,
+      "ttft_p95_ms": 404.3,
+      "tpot_p50_ms": 13.94,
+      "tpot_p95_ms": 24.79,
+      "e2e_p50_s": 3.93,
+      "e2e_p95_s": 6.71,
+      "output_tokens": 12288,
+      "tokens_from_usage": true,
+      "max_in_flight": 4,
+      "mean_output_tokens": 256.0,
+      "mean_prompt_tokens": 482.0,
+      "finish_reasons": {
+        "length": 48
+      },
+      "peak_vram_gib": 7.68,
+      "mean_gpu_util_pct": 81.9,
+      "peak_power_w": 278.3,
+      "peak_kv_cache_usage": null,
+      "preemptions": null,
+      "first_error": null
+    },
+    {
+      "concurrency": 16,
+      "requests": 48,
+      "errors": 0,
+      "wall_s": 23.77,
+      "throughput_tok_s": 516.9,
+      "requests_per_s": 2.02,
+      "ttft_p50_ms": 4373.4,
+      "ttft_p95_ms": 4748.3,
+      "tpot_p50_ms": 14.12,
+      "tpot_p95_ms": 14.21,
+      "e2e_p50_s": 7.98,
+      "e2e_p95_s": 8.35,
+      "output_tokens": 12288,
+      "tokens_from_usage": true,
+      "max_in_flight": 16,
+      "mean_output_tokens": 256.0,
+      "mean_prompt_tokens": 482.9,
+      "finish_reasons": {
+        "length": 48
+      },
+      "peak_vram_gib": 7.68,
+      "mean_gpu_util_pct": 72.6,
+      "peak_power_w": 214.7,
+      "peak_kv_cache_usage": null,
+      "preemptions": null,
+      "first_error": null
+    }
+  ]
+}
