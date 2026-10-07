@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Local Inference Lab</title>
+<meta name="description" content="Serving open LLMs on one 16 GB GPU: real benchmarks of vLLM, llama.cpp and Ollama, and a KV cache planner that runs in your browser." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #fafbfc; --surface: #ffffff; --ink: #13213b; --muted: #566173; --line: #dde3ea;
+    --accent: #1f5fa8; --tint: #e8eff8; --good: #1d7a4a; --bad: #a12a2a; --grid: #e9edf2;
+    --s1: #1f5fa8; --s2: #6fa8e8; --s3: #c2701b; --s4: #e8a65a; --s5: #7d8796;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0f1a2e; --surface: #15223a; --ink: #e8edf4; --muted: #a3aebd; --line: #26354f;
+      --accent: #8dbcf0; --tint: #1a2a44; --good: #6fcf97; --bad: #f08c8c; --grid: #22314b;
+      --s1: #8dbcf0; --s2: #3f7fc4; --s3: #f0a75a; --s4: #b36d22; --s5: #8f9aab;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+    font: 16px/1.6 "IBM Plex Sans", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+  header.top { border-bottom: 1px solid var(--line); background: var(--surface); }
+  header.top .wrap { display: flex; align-items: center; gap: 8px 12px; min-height: 56px; flex-wrap: wrap; padding-top: 10px; padding-bottom: 10px; }
+  .brand { font: 600 1.15rem/1 "IBM Plex Sans Condensed", sans-serif; color: var(--ink); text-decoration: none; }
+  header.top nav { margin-left: auto; display: flex; gap: 14px; font-size: .92rem; }
+  h1 { font: 600 clamp(1.7rem, 5vw, 2.4rem)/1.15 "IBM Plex Sans Condensed", sans-serif; margin: 36px 0 10px; letter-spacing: -.01em; }
+  h2 { font: 600 1.35rem/1.25 "IBM Plex Sans Condensed", sans-serif; margin: 0 0 6px; }
+  .lead { color: var(--muted); max-width: 70ch; margin: 0 0 8px; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 22px 0 8px; }
+  .fact { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  .fact b { display: block; font: 600 1.6rem/1.1 "IBM Plex Sans Condensed", sans-serif; }
+  .fact span { color: var(--muted); font-size: .88rem; }
+  section.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin: 22px 0; }
+  .tabs { display: flex; gap: 6px; margin: 12px 0; flex-wrap: wrap; }
+  .tabs button { font: inherit; font-size: .9rem; border: 1px solid var(--line); background: none; color: var(--muted);
+    border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  figure { margin: 0; }
+  figcaption { font-size: .88rem; color: var(--muted); margin-bottom: 4px; }
+  svg.chart { width: 100%; height: auto; display: block; }
+  svg.chart text { fill: var(--muted); font: 11px "IBM Plex Sans", sans-serif; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .85rem; margin: 8px 0 0; padding: 0; list-style: none; }
+  .legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; margin-top: 10px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .planner { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; margin-top: 12px; }
+  @media (max-width: 720px) { .planner { grid-template-columns: 1fr; } }
+  label { display: block; font-size: .88rem; color: var(--muted); margin: 10px 0 4px; }
+  select, input[type=number] { font: inherit; width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--paper); color: var(--ink); }
+  input[type=range] { width: 100%; }
+  .hint { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .hint button { font: inherit; font-size: .8rem; border: 1px dashed var(--line); background: none; color: var(--accent);
+    border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+  .seg { display: flex; gap: 6px; }
+  .seg label { margin: 0; flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; cursor: pointer; color: var(--ink); }
+  .seg input { margin-right: 6px; }
+  .out { background: var(--tint); border-radius: 8px; padding: 16px; }
+  .out .big { font: 600 2rem/1.1 "IBM Plex Sans Condensed", sans-serif; }
+  .out dl { display: grid; grid-template-columns: auto auto; gap: 4px 14px; margin: 12px 0 0; font-size: .92rem; }
+  .out dt { color: var(--muted); } .out dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .verdict { margin-top: 12px; font-weight: 500; }
+  .verdict.ok { color: var(--good); } .verdict.no { color: var(--bad); }
+  .check { margin-top: 10px; font-size: .88rem; color: var(--muted); }
+  .bar { height: 26px; border-radius: 4px; background: var(--s1); display: flex; align-items: center; padding: 0 8px;
+    color: var(--paper); font-size: .85rem; white-space: nowrap; }
+  .bars > div { margin: 8px 0; } .bars span { font-size: .85rem; color: var(--muted); }
+  code { font: .88em "IBM Plex Mono", monospace; }
+  footer { color: var(--muted); font-size: .88rem; padding: 26px 0 40px; }
+  .status { color: var(--muted); }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="./">Local Inference Lab</a>
+  <nav><a href="#serving">Serving</a><a href="#kv">KV cache</a><a href="#planner">Planner</a>
+    <a href="https://github.com/howardguoui/local-inference-lab">GitHub</a></nav>
+</div></header>
+
+<main class="wrap">
+  <h1>How much LLM can one 16 GB GPU serve?</h1>
+  <p class="lead">Real benchmarks of vLLM, llama.cpp and Ollama serving the same 7B model at 4-bit, and a KV cache
+    planner you can run below. <span id="when" class="status">Loading results…</span></p>
+  <div class="facts" id="facts"></div>
+
+  <section class="card" id="serving">
+    <h2>Which server, and for how many users</h2>
+    <p class="lead">Each config served the same requests at rising concurrency. Throughput is output tokens per second
+      across all users; time to first token is how long a user waits before the answer starts.</p>
+    <div class="tabs" role="group" aria-label="Scenario">
+      <button type="button" data-scenario="chat" aria-pressed="true">Chat: 512-token prompts</button>
+      <button type="button" data-scenario="long" aria-pressed="false">Long: 4k-token prompts</button>
+    </div>
+    <div class="charts">
+      <figure><figcaption>Throughput (tokens/s, higher is better)</figcaption><svg class="chart" id="c-tput" viewBox="0 0 440 260" role="img" aria-label="Throughput by concurrency"></svg></figure>
+      <figure><figcaption id="ttft-cap">Median time to first token (seconds, log scale, lower is better)</figcaption><svg class="chart" id="c-ttft" viewBox="0 0 440 260" role="img" aria-label="Time to first token by concurrency"></svg></figure>
+    </div>
+    <ul class="legend" id="legend"></ul>
+    <div class="tablewrap"><table id="t-runs"></table></div>
+  </section>
+
+  <section class="card" id="kv">
+    <h2>KV cache: FP16 vs FP8</h2>
+    <p class="lead">vLLM turns the memory left after the weights into KV cache, which holds every active user's context.
+      Storing it in FP8 halves the bytes per token, so more users fit before vLLM has to pause (preempt) requests.</p>
+    <div class="bars" id="kv-bars"></div>
+    <div class="tablewrap"><table id="t-kv"></table></div>
+  </section>
+
+  <section class="card" id="planner">
+    <h2>Plan a vLLM deployment</h2>
+    <p class="lead">Runs in your browser with the same formula as <code>inference-lab plan vllm</code>. Weights size is
+      what the checkpoint's files add up to; overhead covers activations and CUDA graphs.</p>
+    <div class="planner">
+      <form id="pform" onsubmit="return false">
+        <label for="p-model">Model</label><select id="p-model"></select>
+        <label for="p-weights">Weights (GiB)</label><input id="p-weights" type="number" min="0" step="0.01" />
+        <div class="hint" id="p-hints"></div>
+        <label for="p-gpu">GPU memory (GiB)</label><input id="p-gpu" type="number" min="1" step="0.01" />
+        <label for="p-len">Max context per request (tokens)</label>
+        <select id="p-len"><option>4096</option><option selected>8192</option><option>16384</option><option>32768</option></select>
+        <label>KV cache type</label>
+        <div class="seg"><label><input type="radio" name="p-kv" value="auto" checked />FP16</label><label><input type="radio" name="p-kv" value="fp8" />FP8</label></div>
+        <label for="p-util">GPU memory vLLM may use: <b id="p-util-v"></b></label>
+        <input id="p-util" type="range" min="0.70" max="0.98" step="0.01" />
+      </form>
+      <div class="out" aria-live="polite" id="p-out"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p>Every number comes from <a href="https://github.com/howardguoui/local-inference-lab/tree/main/results">real runs</a>
+    published by <code>scripts/publish_results.sh</code>; this page is rebuilt from them by <code>inference-lab demo</code>.
+    <a href="data.json">Raw data</a> · Built by <a href="https://howardguoui.github.io/">Howard Guo</a></p>
+</footer>
+<script src="planner.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

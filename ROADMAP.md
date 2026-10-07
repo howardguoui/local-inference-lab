@@ -23,5 +23,7 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 
 ## Shipped
 
+- 2026-10-07: demo page on GitHub Pages (`inference-lab demo` → `docs/`): charts of the published runs, FP16 vs FP8
+  KV cache, and the vLLM planner in the browser, with a predicted-vs-actual KV check (−9.5% FP16, +5.1% FP8).
 - 2026-10-06: planner (vLLM KV blocks, llama.cpp `-ngl` from GGUF tensor sizes), streaming benchmark with NVML
   and Prometheus metrics, MCP server (FastMCP), docker-compose profiles, run matrix, CI.

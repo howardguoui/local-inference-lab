@@ -6,6 +6,7 @@ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 819
 inference-lab plan llamacpp --gguf-path models/Qwen2.5-32B-Instruct-Q4_K_M.gguf --ctx 8192 -ctk q8_0 -ctv q8_0
 inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 inference-lab report
+inference-lab demo
 inference-lab mcp
 """
 
@@ -106,6 +107,9 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("report", help="rebuild results/latest.md from saved runs")
 
+    d = sub.add_parser("demo", help="build the static demo page (GitHub Pages) from saved runs")
+    d.add_argument("--out", default="docs", help="folder GitHub Pages serves")
+
     m = sub.add_parser("mcp", help="run the MCP server (stdio by default)")
     m.add_argument("--http", action="store_true")
     m.add_argument("--port", type=int, default=8765)
@@ -114,6 +118,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if a.cmd == "gpu":
         print(json.dumps(gpu_snapshot() or {"error": "NVML unavailable: no NVIDIA driver"}, indent=2))
+    elif a.cmd == "demo":
+        from .demo import build
+
+        page = build(Path(a.out))
+        print(f"Wrote {page} and {page.parent / 'data.json'}")
     elif a.cmd == "plan" and a.kind == "kv":
         model = get_model(a.model)
         print(

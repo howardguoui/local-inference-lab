@@ -12,6 +12,10 @@ Serve, size and benchmark open LLMs on one consumer GPU (built on an RTX 5070 Ti
 - **An MCP server for agents.** The same tools, exposed over the Model Context Protocol (FastMCP), so Claude Code
   or Claude Desktop can check the GPU, size a deployment and run a benchmark by asking.
 
+**Demo:** [howardguoui.github.io/local-inference-lab](https://howardguoui.github.io/local-inference-lab/): the
+published results as charts, and the vLLM planner running in your browser (free static page, rebuilt from
+`results/` by `inference-lab demo`).
+
 **Stack:** Python, asyncio + httpx, vLLM, llama.cpp, Ollama, NVML, Prometheus, FastMCP, Docker Compose, pytest,
 GitHub Actions
 
@@ -64,6 +68,15 @@ Run `scripts/run_matrix.sh` on the GPU machine; it benchmarks each config in tur
 The engines are not configured identically, and the table should be read with that in mind: vLLM batches up to
 64 sequences, while llama.cpp and Ollama run 8 parallel slots, so above concurrency 8 their extra requests queue
 and show up as TTFT. vLLM serves AWQ 4-bit weights, the others GGUF Q4_K_M.
+
+## Demo page
+
+`inference-lab demo` writes `docs/` (served by GitHub Pages from `main`): throughput and time-to-first-token
+charts for every saved run, the FP16 vs FP8 KV cache comparison, and the vLLM planner ported to `planner.js`.
+`data.json` carries the runs from `results/`, the planner's constants and model presets, and a predicted-vs-actual
+check: for the Qwen2.5-7B AWQ checkpoint (5.19 GiB of weights) on the 15.92 GiB card the planner predicted
+143,040 FP16 and 286,096 FP8 KV tokens against the 158,048 and 272,304 vLLM allocated (−9.5% and +5.1%).
+`tests/test_demo.py` runs `planner.js` under Node and checks it against `plan_vllm` on 1,008 input combinations.
 
 ## The planner
 
