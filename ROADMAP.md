@@ -5,8 +5,8 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 
 ## Next
 
-- [ ] **First full benchmark run** on the RTX 5070 Ti: `scripts/run_matrix.sh` (with `OFFLOAD=1`), publish
-      `results/latest.md`, and summarize the findings at the top of the README.
+- [ ] **Finish the matrix:** the 32B partial-offload run (`OFFLOAD=1 scripts/run_matrix.sh`) and Ollama on the
+      long scenario, the two parts the 2026-10-07 run did not cover.
 - [ ] **Planner calibration:** parse vLLM's startup log ("Available KV cache memory", CUDA graph memory) and
       report predicted vs actual KV blocks with the error in percent; tune `overhead_gib` defaults from real runs.
 - [ ] **Prefix caching scenario:** shared 2k-token system prompt plus unique questions; record vLLM's prefix cache
@@ -21,6 +21,8 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 
 ## Shipped
 
+- 2026-10-09: first benchmark matrix on the RTX 5070 Ti published (`results/latest.md`: vLLM and llama.cpp from
+  2026-10-07, Ollama chat from 2026-10-06) with the findings summarized in the README.
 - 2026-10-09: charts of throughput and TTFT p95 against concurrency per server config, written as SVG from
   `results/*.json` by `inference-lab report` (standard library instead of matplotlib: no new dependency).
 - 2026-10-07: demo page on GitHub Pages (`inference-lab demo` → `docs/`): charts of the published runs, FP16 vs FP8

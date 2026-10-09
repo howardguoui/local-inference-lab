@@ -55,8 +55,37 @@ Mid-stream errors (servers send them inside a 200 response) and empty completion
 
 ## Results
 
-Run `scripts/run_matrix.sh` on the GPU machine; it benchmarks each config in turn and writes
-`results/latest.md` (one row per server config and concurrency level) plus a JSON file per run.
+Measured on one NVIDIA GeForce RTX 5070 Ti (15.92 GiB): the vLLM and llama.cpp matrix on 2026-10-07, Ollama's chat
+scenario on 2026-10-06. One run per config, no errors in any of them. Numbers are copied from
+[`results/latest.md`](results/latest.md), which also has TTFT, TPOT, VRAM and KV cache for every row.
+
+Throughput in output tokens/s across all streams, by concurrency:
+
+| Server config | chat, 1 | chat, 4 | chat, 16 | long, 8 | long, 16 | long, 32 | long, 48 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| vllm-fp16kv | 114.9 | 408.8 | 1092.4 | 257.2 | 285.6 | 294 | 296.8 |
+| vllm-fp8kv | 120 | 437.8 | 1209.9 | 296.2 | 326.9 | 350.7 | 359 |
+| llamacpp-f16kv | 128 | 198.9 | 527.4 | 231.2 | 225.8 | 223.2 | 219.2 |
+| llamacpp-q8kv | 124.5 | 192.9 | 516.9 | 226.8 | 216.6 | 211.7 | 202.8 |
+| ollama-q4km | 118.4 | 112.8 | 99.1 | – | – | – | – |
+
+![Throughput against concurrency for each server config](results/throughput.svg)
+![TTFT p95 against concurrency for each server config](results/ttft-p95.svg)
+
+- **One stream is a tie, batching is not.** At concurrency 1 every config lands between 114.9 and 128 tok/s. At 16
+  chat streams vLLM reaches 1092.4 (FP16 KV) and 1209.9 tok/s (FP8 KV), llama.cpp 527.4 and 516.9, and Ollama 99.1
+  with a TTFT p95 of 42.5 s.
+- **FP8 KV cache pays off when the cache is the limit.** vLLM allocated 9,878 KV blocks (158,048 tokens) with FP16
+  and 17,019 blocks (272,304 tokens) with FP8. With 48 long requests in flight the FP16 cache peaked at 100% and
+  vLLM preempted 6 sequences; the FP8 cache peaked at 65% with no preemptions, at 359 against 296.8 tok/s.
+- **llama.cpp's q8_0 KV cache trades a little speed for memory.** Peak VRAM was 7.68 to 8.03 GiB against 9.28 to
+  9.5 GiB with f16, and throughput was lower at every level (202.8 against 219.2 tok/s at 48 long streams).
+- **Past its 8 slots llama.cpp queues.** Its long-scenario throughput stays between 219.2 and 231.2 tok/s (f16) from
+  8 to 48 streams while TTFT p95 grows from 2.2 s to 48.4 s; vLLM FP16 is at 27.5 s at 48.
+
+Not measured yet: Ollama on the long scenario and the optional 32B partial-offload run. To reproduce or extend, run
+`scripts/run_matrix.sh` on the GPU machine; it benchmarks each config in turn and writes a JSON file per run, then
+`inference-lab report` rebuilds `results/latest.md` and the two charts from those files.
 
 | Server configs | Scenarios |
 | --- | --- |
