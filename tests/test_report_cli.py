@@ -55,6 +55,26 @@ def test_report_keeps_latest_run_per_label(tmp_path):
     assert "No runs yet" in report.markdown([])
 
 
+def test_charts_draw_a_line_per_config_in_a_panel_per_prompt_size(tmp_path):
+    from xml.etree import ElementTree
+
+    report.save(_run("vllm-fp16kv-chat", "2026-10-06 18:00 UTC", 400.0), tmp_path)
+    long = _run("vllm-fp16kv-long", "2026-10-07 18:00 UTC", 300.0)
+    long["prompt_tokens"] = 4096
+    report.save(long, tmp_path)
+    report.save(_run("ollama-q4km", "2026-10-06 19:00 UTC", 100.0), tmp_path)
+    charts = report.write_charts(tmp_path)
+    assert [p.name for p in charts] == ["throughput.svg", "ttft-p95.svg"]
+    svg = charts[0].read_text(encoding="utf-8")
+    ElementTree.fromstring(svg)  # well-formed XML
+    assert svg.count("<polyline") == 3 and "512-token prompts" in svg and "4,096-token prompts" in svg
+    assert ">vllm-fp16kv<" in svg and ">ollama-q4km<" in svg and "-chat<" not in svg
+    assert "RTX 5070 Ti · runs 2026-10-06 to 2026-10-07" in svg
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert report.write_charts(empty) == []
+
+
 def test_cli_plans(capsys, tmp_path):
     from tests.conftest import make_gguf
 

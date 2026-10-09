@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 844 368" width="844" height="368" role="img" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">
+<title>Time to first token, p95 (seconds, log scale)</title>
+<rect width="844" height="368" fill="#fcfcfb"/>
+<text x="56" y="24" font-size="15" font-weight="600" fill="#0b0b0b">Time to first token, p95 (seconds, log scale)</text>
+<text x="56" y="42" fill="#52514e">NVIDIA GeForce RTX 5070 Ti · runs 2026-10-06 to 2026-10-07</text>
+<path d="M56 62h20" stroke="#2a78d6" stroke-width="2"/><circle cx="66" cy="62" r="4" fill="#2a78d6"/><text x="82" y="66" fill="#0b0b0b">llamacpp-f16kv</text>
+<path d="M194 62h20" stroke="#eb6834" stroke-width="2"/><circle cx="204" cy="62" r="4" fill="#eb6834"/><text x="220" y="66" fill="#0b0b0b">llamacpp-q8kv</text>
+<path d="M325 62h20" stroke="#1baf7a" stroke-width="2"/><circle cx="335" cy="62" r="4" fill="#1baf7a"/><text x="351" y="66" fill="#0b0b0b">ollama-q4km</text>
+<path d="M442 62h20" stroke="#eda100" stroke-width="2"/><circle cx="452" cy="62" r="4" fill="#eda100"/><text x="468" y="66" fill="#0b0b0b">vllm-fp16kv</text>
+<path d="M559 62h20" stroke="#e87ba4" stroke-width="2"/><circle cx="569" cy="62" r="4" fill="#e87ba4"/><text x="585" y="66" fill="#0b0b0b">vllm-fp8kv</text>
+<text x="56" y="84" font-weight="600" fill="#0b0b0b">512-token prompts</text>
+<path d="M56 316.0h330" stroke="#e4e3df"/>
+<text x="50" y="320.0" text-anchor="end" fill="#52514e">0.1</text>
+<path d="M56 242.7h330" stroke="#e4e3df"/>
+<text x="50" y="246.7" text-anchor="end" fill="#52514e">1</text>
+<path d="M56 169.3h330" stroke="#e4e3df"/>
+<text x="50" y="173.3" text-anchor="end" fill="#52514e">10</text>
+<path d="M56 96.0h330" stroke="#e4e3df"/>
+<text x="50" y="100.0" text-anchor="end" fill="#52514e">100</text>
+<text x="76.0" y="334" text-anchor="middle" fill="#52514e">1</text>
+<text x="221.0" y="334" text-anchor="middle" fill="#52514e">4</text>
+<text x="366.0" y="334" text-anchor="middle" fill="#52514e">16</text>
+<text x="221.0" y="354" text-anchor="middle" fill="#52514e">Concurrent requests</text>
+<polyline points="76.0,300.2 221.0,267.3 366.0,192.9" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="76.0" cy="300.2" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="221.0" cy="267.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="366.0" cy="192.9" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="76.0,303.9 221.0,271.5 366.0,193.1" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="76.0" cy="303.9" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="221.0" cy="271.5" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="366.0" cy="193.1" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="76.0,306.4 221.0,174.9 366.0,123.2" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="76.0" cy="306.4" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="221.0" cy="174.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="366.0" cy="123.2" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="76.0,303.4 221.0,273.9 366.0,232.1" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="76.0" cy="303.4" r="4" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="221.0" cy="273.9" r="4" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="366.0" cy="232.1" r="4" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="76.0,304.6 221.0,275.8 366.0,234.4" fill="none" stroke="#e87ba4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="76.0" cy="304.6" r="4" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="221.0" cy="275.8" r="4" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="366.0" cy="234.4" r="4" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2"/>
+<text x="450" y="84" font-weight="600" fill="#0b0b0b">4,096-token prompts</text>
+<path d="M450 316.0h330" stroke="#e4e3df"/>
+<text x="444" y="320.0" text-anchor="end" fill="#52514e">1</text>
+<path d="M450 206.0h330" stroke="#e4e3df"/>
+<text x="444" y="210.0" text-anchor="end" fill="#52514e">10</text>
+<path d="M450 96.0h330" stroke="#e4e3df"/>
+<text x="444" y="100.0" text-anchor="end" fill="#52514e">100</text>
+<text x="470.0" y="334" text-anchor="middle" fill="#52514e">8</text>
+<text x="566.7" y="334" text-anchor="middle" fill="#52514e">16</text>
+<text x="663.3" y="334" text-anchor="middle" fill="#52514e">32</text>
+<text x="760.0" y="334" text-anchor="middle" fill="#52514e">48</text>
+<text x="615.0" y="354" text-anchor="middle" fill="#52514e">Concurrent requests</text>
+<polyline points="470.0,278.0 566.7,203.9 663.3,155.9 760.0,130.6" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="470.0" cy="278.0" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="566.7" cy="203.9" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="663.3" cy="155.9" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="760.0" cy="130.6" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="470.0,280.9 566.7,203.0 663.3,152.5 760.0,126.2" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="470.0" cy="280.9" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="566.7" cy="203.0" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="663.3" cy="152.5" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="760.0" cy="126.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="470.0,264.1 566.7,228.1 663.3,179.7 760.0,157.6" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="470.0" cy="264.1" r="4" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="566.7" cy="228.1" r="4" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="663.3" cy="179.7" r="4" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="760.0" cy="157.6" r="4" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="470.0,264.5 566.7,231.8 663.3,184.7 760.0,160.6" fill="none" stroke="#e87ba4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="470.0" cy="264.5" r="4" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="566.7" cy="231.8" r="4" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="663.3" cy="184.7" r="4" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="760.0" cy="160.6" r="4" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2"/>
+</svg>

@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--allow-eos", action="store_true", help="let the model stop early (default: fixed length)")
     b.add_argument("--config", help="backends YAML (default configs/backends.yaml)")
 
-    sub.add_parser("report", help="rebuild results/latest.md from saved runs")
+    sub.add_parser("report", help="rebuild results/latest.md and the SVG charts from saved runs")
 
     d = sub.add_parser("demo", help="build the static demo page (GitHub Pages) from saved runs")
     d.add_argument("--out", default="docs", help="folder GitHub Pages serves")
@@ -170,6 +170,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Saved {path}; combined table in {report.write_markdown()}")
     elif a.cmd == "report":
         print(report.write_markdown().read_text(encoding="utf-8"))
+        report.write_charts()
     elif a.cmd == "mcp":
         from .mcp_server import main as serve
 
