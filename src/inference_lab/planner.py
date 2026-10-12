@@ -116,6 +116,72 @@ def plan_vllm(
 
 
 @dataclass
+class VllmCalibration:
+    predicted_kv_tokens: int
+    actual_kv_tokens: int
+    actual_source: str  # "log" (vLLM's "KV cache size: N tokens") or "kv_memory" (from Available KV cache memory)
+    error_pct: float  # (predicted - actual) / actual
+    predicted_kv_gib: float
+    actual_kv_gib: float
+    weights_gib: float  # what the plan assumed
+    loaded_weights_gib: float | None  # what vLLM reported loading
+    overhead_gib: float  # what the plan assumed
+    fitted_overhead_gib: float  # the overhead_gib that reproduces this server's KV memory with the plan's weights
+    cuda_graph_gib: float | None
+    advice: str
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def calibrate_vllm(plan: VllmPlan, startup, block_size: int = 16) -> VllmCalibration:
+    """Compare a plan with what vLLM measured at startup (a vllm_log.VllmStartup).
+
+    vLLM sizes the cache as gpu_memory_utilization x total VRAM - non-KV memory (weights, activation peak)
+    - CUDA graph estimate, so the overhead that makes the planner exact is the plan's own budget minus the
+    logged KV memory. It holds for the server flags the log came from (max_num_seqs, max_num_batched_tokens,
+    enforce_eager); other flags change the activation peak.
+    """
+    claimed = plan.gpu_gib * plan.gpu_memory_utilization
+    fitted = claimed - plan.weights_gib - startup.kv_available_gib
+    if startup.kv_cache_tokens:
+        actual, source = startup.kv_cache_tokens, "log"
+    else:
+        blocks = int(startup.kv_available_gib * GIB // (plan.kv_bytes_per_token * block_size))
+        actual, source = blocks * block_size, "kv_memory"
+    error = 100 * (plan.kv_tokens - actual) / actual if actual else float("inf")
+    if abs(error) <= 2:
+        advice = f"The plan is within {abs(error):.1f}% of what vLLM allocated."
+    else:
+        advice = (
+            f"The plan is {abs(error):.1f}% {'over' if error > 0 else 'under'} what vLLM allocated. "
+            f"--overhead-gib {fitted:.2f} reproduces this server's KV cache."
+        )
+    loaded = startup.weights_gib
+    if loaded is not None and abs(loaded - plan.weights_gib) > 0.1:
+        advice += (
+            f" vLLM loaded {loaded:.2f} GiB of weights against the {plan.weights_gib:.2f} GiB planned "
+            "(file sizes differ from loaded tensors when layers are tied, skipped or repacked)."
+        )
+    return VllmCalibration(
+        predicted_kv_tokens=plan.kv_tokens,
+        actual_kv_tokens=actual,
+        actual_source=source,
+        error_pct=round(error, 1),
+        predicted_kv_gib=plan.kv_budget_gib,
+        actual_kv_gib=startup.kv_available_gib,
+        weights_gib=plan.weights_gib,
+        loaded_weights_gib=loaded,
+        overhead_gib=plan.overhead_gib,
+        fitted_overhead_gib=round(fitted, 2),
+        cuda_graph_gib=startup.cuda_graph_gib
+        if startup.cuda_graph_gib is not None
+        else startup.cuda_graph_estimate_gib,
+        advice=advice,
+    )
+
+
+@dataclass
 class OffloadPlan:
     model: str
     layout_source: str  # "gguf" (tensor table read) or "estimate" (from file size and model shape)

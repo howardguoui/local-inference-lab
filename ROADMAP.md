@@ -7,8 +7,8 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 
 - [ ] **Finish the matrix:** the 32B partial-offload run (`OFFLOAD=1 scripts/run_matrix.sh`) and Ollama on the
       long scenario, the two parts the 2026-10-07 run did not cover.
-- [ ] **Planner calibration:** parse vLLM's startup log ("Available KV cache memory", CUDA graph memory) and
-      report predicted vs actual KV blocks with the error in percent; tune `overhead_gib` defaults from real runs.
+- [ ] **Tune `overhead_gib`:** set the vLLM planner's default from the fitted overheads of the next matrix run's
+      saved logs (`inference-lab plan vllm --vllm-log logs/<label>.log`).
 - [ ] **Prefix caching scenario:** shared 2k-token system prompt plus unique questions; record vLLM's prefix cache
       hit rate and the TTFT drop against unique prompts.
 - [ ] **Quality check per config:** a small fixed answer-accuracy set (e.g. 50 arithmetic word problems with exact
@@ -21,6 +21,10 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 
 ## Shipped
 
+- 2026-10-12: planner calibration against vLLM's startup log: `inference-lab plan vllm --vllm-log` parses the
+  loaded weights, available KV memory, KV token capacity and CUDA graph memory, and reports predicted vs actual
+  KV tokens with the error in percent and the `--overhead-gib` that reproduces that server. `run_matrix.sh` keeps
+  each server's log in `logs/`. Tuning the default from real logs is the follow-up item above.
 - 2026-10-09: first benchmark matrix on the RTX 5070 Ti published (`results/latest.md`: vLLM and llama.cpp from
   2026-10-07, Ollama chat from 2026-10-06) with the findings summarized in the README.
 - 2026-10-09: charts of throughput and TTFT p95 against concurrency per server config, written as SVG from

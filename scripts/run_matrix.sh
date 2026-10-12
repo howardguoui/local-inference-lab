@@ -47,6 +47,9 @@ run() {  # run <label> <profile> <base url> [VAR=value ...]
     echo "!!! $label: server never became ready"
     docker compose --profile "$profile" logs --tail 30
   fi
+  # keep the server log: `inference-lab plan vllm --vllm-log logs/<label>.log` compares the plan with it
+  mkdir -p logs
+  docker compose --profile "$profile" logs --no-color > "logs/$label.log" 2>&1
   docker compose --profile "$profile" down
 }
 

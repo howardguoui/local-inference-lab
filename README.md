@@ -145,6 +145,19 @@ $ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 3
   --kv-cache-dtype fp8 would hold about 288,352 tokens (8 full-length sequences).
 ```
 
+To see where a prediction went wrong, give it the startup log of a vLLM server run with the same settings
+(`scripts/run_matrix.sh` saves one per config in `logs/`; by hand, `docker compose logs vllm > vllm.log`). vLLM
+logs the figures it sized the cache from (`Model loading took … GiB`, `Available KV cache memory: … GiB`,
+`GPU KV cache size: … tokens`, CUDA graph memory), and the plan is printed next to them with its error in percent,
+the weights vLLM actually loaded, and the `--overhead-gib` that reproduces that server's KV cache:
+
+```
+$ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.19 --vllm-log logs/vllm-fp16kv.log
+```
+
+The fitted overhead holds for the flags the log came from: `--max-num-seqs`, `--max-num-batched-tokens` and
+`--enforce-eager` change vLLM's activation and CUDA graph memory.
+
 **llama.cpp and models bigger than VRAM:** with `-ngl N`, llama.cpp puts the output head on the GPU first, then
 the **last** N-1 transformer blocks with their KV cache; the first blocks and the token embeddings stay in system
 RAM ([`llama-model.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/src/llama-model.cpp), where

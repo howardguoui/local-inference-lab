@@ -3,6 +3,7 @@
 inference-lab gpu
 inference-lab plan kv --model qwen2.5-7b --tokens 32768
 inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 8192 --kv-cache-dtype fp8
+inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.19 --vllm-log logs/vllm-fp16kv.log
 inference-lab plan llamacpp --gguf-path models/Qwen2.5-32B-Instruct-Q4_K_M.gguf --ctx 8192 -ctk q8_0 -ctv q8_0
 inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 inference-lab report
@@ -22,7 +23,8 @@ from .backends import load_backends
 from .gguf_layout import estimate_layout, read_gguf
 from .gpu import default_gpu_gib, gpu_snapshot
 from .models import get_model
-from .planner import LLAMACPP_KV_BYTES, VLLM_KV_BYTES, kv_dtype_table, plan_llamacpp, plan_vllm
+from .planner import LLAMACPP_KV_BYTES, VLLM_KV_BYTES, calibrate_vllm, kv_dtype_table, plan_llamacpp, plan_vllm
+from .vllm_log import read_vllm_log
 
 
 def _size_gib(path: str) -> float:
@@ -78,11 +80,12 @@ def main(argv: list[str] | None = None) -> None:
     w = pv.add_mutually_exclusive_group(required=True)
     w.add_argument("--weights-gib", type=float)
     w.add_argument("--weights-path", help="checkpoint directory; sums its weight files")
-    pv.add_argument("--max-model-len", type=int, default=8192)
+    pv.add_argument("--max-model-len", type=int, help="default: the log's value with --vllm-log, else 8192")
     pv.add_argument("--gpu-gib", type=float, help="default: total VRAM from NVML")
     pv.add_argument("--gpu-memory-utilization", type=float, default=0.90)
     pv.add_argument("--kv-cache-dtype", default="auto", choices=sorted(VLLM_KV_BYTES))
     pv.add_argument("--overhead-gib", type=float, default=1.5, help="activations + CUDA graphs (estimate)")
+    pv.add_argument("--vllm-log", help="startup log of a vLLM server run with these settings: compare the plan with it")
 
     pl = plan.add_parser("llamacpp", help="largest -ngl that fits, for full or partial GPU offload")
     g = pl.add_mutually_exclusive_group(required=True)
@@ -133,18 +136,27 @@ def main(argv: list[str] | None = None) -> None:
         for r in kv_dtype_table(model, a.tokens):
             print(f"  {r['engine']:10} {r['dtype']:8} {r['kib_per_token']:>10} {r['gib']:>8}")
     elif a.cmd == "plan" and a.kind == "vllm":
+        startup = None
+        if a.vllm_log:
+            try:
+                startup = read_vllm_log(a.vllm_log)
+            except (OSError, ValueError) as e:
+                raise SystemExit(f"--vllm-log {a.vllm_log}: {e}") from e
+        max_len = a.max_model_len or (startup and startup.max_model_len) or 8192
         weights = a.weights_gib if a.weights_gib is not None else _size_gib(a.weights_path)
-        _print_plan(
-            plan_vllm(
-                get_model(a.model),
-                _gpu(a.gpu_gib, "total"),
-                weights,
-                a.max_model_len,
-                a.gpu_memory_utilization,
-                a.kv_cache_dtype,
-                a.overhead_gib,
-            ).as_dict()
+        plan = plan_vllm(
+            get_model(a.model),
+            _gpu(a.gpu_gib, "total"),
+            weights,
+            max_len,
+            a.gpu_memory_utilization,
+            a.kv_cache_dtype,
+            a.overhead_gib,
         )
+        _print_plan(plan.as_dict())
+        if startup:
+            print(f"\n  against {a.vllm_log}:\n")
+            _print_plan(calibrate_vllm(plan, startup).as_dict())
     elif a.cmd == "plan" and a.kind == "llamacpp":
         if a.gguf_path:
             layout = read_gguf(a.gguf_path)
