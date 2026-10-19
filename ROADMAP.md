@@ -9,8 +9,8 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
       long scenario, the two parts the 2026-10-07 run did not cover.
 - [ ] **Tune `overhead_gib`:** set the vLLM planner's default from the fitted overheads of the next matrix run's
       saved logs (`inference-lab plan vllm --vllm-log logs/<label>.log`).
-- [ ] **Prefix caching scenario:** shared 2k-token system prompt plus unique questions; record vLLM's prefix cache
-      hit rate and the TTFT drop against unique prompts.
+- [ ] **Run the prefix caching scenario** on the GPU (`run_matrix.sh` now includes it for vLLM) and summarize the
+      TTFT drop and hit rate in the README.
 - [ ] **Quality check per config:** a small fixed answer-accuracy set (e.g. 50 arithmetic word problems with exact
       answers) so FP8 KV cache and Q4 quantization show any accuracy cost next to their speed gain.
 - [ ] **Speculative decoding:** vLLM n-gram / draft-model speculation on the chat scenario; acceptance rate and
@@ -21,6 +21,11 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 
 ## Shipped
 
+- 2026-10-19: prefix caching scenario: `inference-lab bench --system-tokens N [--shared-system]` puts a system
+  prompt of about N tokens in front of every request, shared or (the control) unique per request, and records each
+  level's prefix cache hit rate from the change in vLLM's `prefix_cache_hits` / `prefix_cache_queries` counters.
+  `run_matrix.sh` runs the shared/unique pair on the vLLM configs; `results/latest.md` gets a "Prefix caching"
+  table. Numbers come with the next GPU run (item above).
 - 2026-10-12: planner calibration against vLLM's startup log: `inference-lab plan vllm --vllm-log` parses the
   loaded weights, available KV memory, KV token capacity and CUDA graph memory, and reports predicted vs actual
   KV tokens with the error in percent and the `--overhead-gib` that reproduces that server. `run_matrix.sh` keeps

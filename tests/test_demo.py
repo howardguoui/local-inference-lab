@@ -63,12 +63,14 @@ def test_build_writes_page_and_data_from_saved_runs(tmp_path):
             _run("vllm-fp16kv-chat", 512, _cache("auto", 9878), levels=(1, 4, 16)),
             _run("vllm-fp8kv-long", 4096, _cache("fp8", 17019), levels=(8, 48)),
             _run("ollama-q4km", 512),
+            {**_run("vllm-fp16kv-prefix", 128), "system_tokens": 2048, "shared_system": True},
         ],
     )
     page = demo.build(tmp_path / "site", results)
     data = json.loads((page.parent / "data.json").read_text(encoding="utf-8"))
     assert {p.name for p in page.parent.iterdir()} >= {"index.html", "planner.js", "app.js", "data.json", ".nojekyll"}
     runs = {r["label"]: r for r in data["runs"]}
+    assert "vllm-fp16kv-prefix" not in runs  # the prefix scenario is reported in latest.md, not on the page
     assert runs["vllm-fp8kv-long"]["scenario"] == "long" and runs["ollama-q4km"]["scenario"] == "chat"
     assert [lv["concurrency"] for lv in runs["vllm-fp16kv-chat"]["levels"]] == [1, 4, 16]
     assert runs["vllm-fp8kv-long"]["kv_cache"] == {

@@ -6,6 +6,7 @@ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.2 --max-model-len 819
 inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.19 --vllm-log logs/vllm-fp16kv.log
 inference-lab plan llamacpp --gguf-path models/Qwen2.5-32B-Instruct-Q4_K_M.gguf --ctx 8192 -ctk q8_0 -ctv q8_0
 inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
+inference-lab bench --backend vllm --system-tokens 2048 --shared-system --prompt-tokens 128 --label vllm-prefix
 inference-lab report
 inference-lab demo
 inference-lab mcp
@@ -107,6 +108,14 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--label", help="name this server config in the report, e.g. vllm-fp8kv")
     b.add_argument("--allow-eos", action="store_true", help="let the model stop early (default: fixed length)")
     b.add_argument("--config", help="backends YAML (default configs/backends.yaml)")
+    b.add_argument(
+        "--system-tokens", type=int, default=0, help="prefix-caching scenario: a system prompt of about this length"
+    )
+    b.add_argument(
+        "--shared-system",
+        action="store_true",
+        help="send the same system prompt every time (default: unique per request, the no-reuse control)",
+    )
 
     sub.add_parser("report", help="rebuild results/latest.md and the SVG charts from saved runs")
 
@@ -171,10 +180,20 @@ def main(argv: list[str] | None = None) -> None:
     elif a.cmd == "bench":
         from .bench import run_benchmark
 
+        if a.shared_system and a.system_tokens <= 0:
+            raise SystemExit("--shared-system needs --system-tokens, e.g. --system-tokens 2048")
         backend = load_backends(a.config)[a.backend]
         result = asyncio.run(
             run_benchmark(
-                backend, a.concurrency, a.requests, a.prompt_tokens, a.max_tokens, a.label, ignore_eos=not a.allow_eos
+                backend,
+                a.concurrency,
+                a.requests,
+                a.prompt_tokens,
+                a.max_tokens,
+                a.label,
+                ignore_eos=not a.allow_eos,
+                system_tokens=a.system_tokens,
+                shared_system=a.shared_system,
             )
         ).as_dict()
         path = report.save(result)

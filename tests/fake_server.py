@@ -3,7 +3,8 @@
 Each request waits a fixed prefill time, then streams tokens at a fixed rate. The KV
 cache gauge rises with the number of active requests, and the preemption counter
 ticks when more than CAPACITY requests run at once, like a real server whose cache
-is full.
+is full. A system prompt seen before counts as a prefix cache hit (and prefills faster),
+like vLLM's automatic prefix caching.
 """
 
 from __future__ import annotations
@@ -23,7 +24,8 @@ CAPACITY = 4
 
 def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20) -> FastAPI:
     app = FastAPI()
-    state = {"active": 0, "peak": 0, "preemptions": 0}
+    state = {"active": 0, "peak": 0, "preemptions": 0, "prefix_hits": 0, "prefix_queries": 0}
+    seen_systems: set[str] = set()
 
     @app.get("/v1/models")
     def models():
@@ -40,6 +42,8 @@ def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20)
                 f'vllm:num_requests_running{{engine="0"}} {min(state["active"], CAPACITY)}',
                 f'vllm:num_requests_waiting{{engine="0"}} {max(0, state["active"] - CAPACITY)}',
                 f'vllm:num_preemptions_total{{engine="0"}} {state["preemptions"]}',
+                f'vllm:prefix_cache_hits_total{{engine="0"}} {state["prefix_hits"]}',
+                f'vllm:prefix_cache_queries_total{{engine="0"}} {state["prefix_queries"]}',
                 'vllm:cache_config_info{block_size="16",cache_dtype="auto",enable_prefix_caching="True",'
                 'gpu_memory_utilization="0.9",num_gpu_blocks="9011"} 1.0',
             ]
@@ -55,6 +59,12 @@ def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20)
         if not body.get("ignore_eos"):
             n = min(n, 5)  # the "model" reaches end-of-sequence early unless told to ignore it
         prompt = body["messages"][-1]["content"]
+        system = next((m["content"] for m in body["messages"] if m["role"] == "system"), None)
+        hit = system is not None and system in seen_systems
+        if system is not None:
+            seen_systems.add(system)
+        state["prefix_queries"] += 600
+        state["prefix_hits"] += 480 if hit else 0  # the system prompt's share of the 600 prompt tokens
 
         async def gen():
             state["active"] += 1
@@ -62,7 +72,7 @@ def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20)
             if state["active"] > CAPACITY:
                 state["preemptions"] += 1
             try:
-                await asyncio.sleep(prefill_s)
+                await asyncio.sleep(prefill_s / 5 if hit else prefill_s)
                 if "FAIL" in prompt:  # an error reported inside a 200 stream, as vLLM and llama.cpp do
                     yield f"data: {json.dumps({'error': {'message': 'context length exceeded', 'code': 400}})}\n\n"
                     return

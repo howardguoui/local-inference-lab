@@ -68,6 +68,9 @@ def summarize(samples: list[Sample]) -> dict:
         "requests_running": sum(running) if running else None,
         "requests_waiting": sum(waiting) if waiting else None,
         "preemptions_total": sum(preempt) if preempt else None,
+        # counters in prompt tokens since the server started (vllm:prefix_cache_{hits,queries} in vLLM's source)
+        "prefix_cache_hits_total": sum(hits) if hits else None,
+        "prefix_cache_queries_total": sum(queries) if queries else None,
         "prefix_cache_hit_rate": (sum(hits) / sum(queries)) if hits and queries and sum(queries) else None,
     }
     info = next((s.labels for s in samples if s.name == "vllm:cache_config_info"), None)

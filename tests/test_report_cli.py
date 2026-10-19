@@ -109,3 +109,29 @@ def test_files_are_utf8_whatever_the_platform_default(tmp_path):
         check=True,
     )
     assert "–" in (tmp_path / "latest.md").read_bytes().decode("utf-8")
+
+
+def test_prefix_runs_get_their_own_table_and_stay_out_of_the_charts(tmp_path):
+    report.save(_run("vllm-fp16kv-chat", "2026-10-06 18:00 UTC", 400.0), tmp_path)
+    for label, shared, hits, ttft in (
+        ("vllm-fp16kv-prefix", True, 0.912, 61.0),
+        ("vllm-fp16kv-unique", False, 0.0, 240.0),
+    ):
+        run = _run(label, "2026-10-08 18:00 UTC", 380.0)
+        run.update(system_tokens=2048, shared_system=shared, prompt_tokens=128)
+        run["levels"][0].update(prefix_cache_hit_rate=hits, ttft_p50_ms=ttft, mean_prompt_tokens=2210.0)
+        report.save(run, tmp_path)
+    md = report.write_markdown(tmp_path).read_text(encoding="utf-8")
+    assert "## Prefix caching" in md
+    assert "| vllm-fp16kv-prefix | 2,048, shared | 4 | 2210 | 61 / 140 | 380 | 91% |" in md
+    assert "| vllm-fp16kv-unique | 2,048, unique | 4 | 2210 | 240 / 140 | 380 | 0% |" in md
+    svg = report.write_charts(tmp_path)[0].read_text(encoding="utf-8")
+    assert svg.count("<polyline") == 1 and "128-token prompts" not in svg
+    assert "## Prefix caching" not in report.markdown([_run("a", "2026-10-06 18:00 UTC", 1.0)])
+
+
+def test_cli_rejects_shared_system_without_a_length():
+    import pytest
+
+    with pytest.raises(SystemExit, match="--shared-system needs --system-tokens"):
+        main(["bench", "--backend", "vllm", "--shared-system"])

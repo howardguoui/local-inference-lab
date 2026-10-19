@@ -118,7 +118,7 @@ def planner_spec() -> dict:
 
 
 def build(out_dir: Path, results_dir: Path | None = None) -> Path:
-    runs = [summarize_run(r) for r in report.load_all(results_dir)]
+    runs = [summarize_run(r) for r in report.load_all(results_dir) if not report.is_prefix_run(r)]
     if not runs:
         raise ValueError("No saved runs in results/; run `inference-lab bench` first.")
     runs.sort(key=lambda r: r["label"])

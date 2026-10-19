@@ -105,3 +105,82 @@ def test_refuses_levels_that_could_never_reach_their_concurrency(server):
     backend = Backend("fake", "vllm", server.url + "/v1", server.url + "/metrics")
     with pytest.raises(ValueError, match="below the top concurrency"):
         asyncio.run(run_benchmark(backend, [1, 48], requests_per_level=32))
+
+
+def test_system_prompts_shared_or_unique():
+    from inference_lab.bench import make_system_prompts
+
+    assert make_system_prompts(3, 0, shared=True) == [None, None, None]
+    shared = make_system_prompts(3, 2048, shared=True)
+    unique = make_system_prompts(3, 2048, shared=False, offset=5)
+    assert len(set(shared)) == 1 and 1400 < len(shared[0].split()) < 1650  # ~0.75 words per token
+    assert len(set(unique)) == 3 and unique[0].startswith("Session 5. ") and unique[0].endswith(shared[0])
+
+
+def _prefix_run(server, shared: bool) -> dict:
+    backend = Backend("fake", "vllm", server.url + "/v1", server.url + "/metrics")
+    return asyncio.run(
+        run_benchmark(
+            backend,
+            [1, 4],
+            requests_per_level=8,
+            prompt_tokens=32,
+            max_tokens=5,
+            warmup=1,
+            metrics_interval=0.01,
+            system_tokens=256,
+            shared_system=shared,
+        )
+    ).as_dict()
+
+
+def test_prefix_scenario_measures_hit_rate_per_level(server):
+    shared = _prefix_run(server, shared=True)
+    assert shared["system_tokens"] == 256 and shared["shared_system"] is True
+    # the warmup request cached the system prompt, so every measured request hits: 480 of 600 prompt tokens
+    assert [lv["prefix_cache_hit_rate"] for lv in shared["levels"]] == [0.8, 0.8]
+
+    unique = _prefix_run(server, shared=False)
+    assert unique["shared_system"] is False
+    assert [lv["prefix_cache_hit_rate"] for lv in unique["levels"]] == [0.0, 0.0]
+    # the fake server prefills a cached prefix 5x faster; at concurrency 1 nothing queues
+    assert shared["levels"][0]["ttft_p50_ms"] < unique["levels"][0]["ttft_p50_ms"]
+
+
+def test_plain_runs_send_no_system_prompt_and_report_no_hit_rate_without_counters(server):
+    from inference_lab.bench import MetricsPoller
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "m"}]})
+        import json as _json
+
+        seen.append(_json.loads(request.content)["messages"])
+        usage = {"prompt_tokens": 9, "completion_tokens": 2}
+        chunks = [
+            {"choices": [{"delta": {"content": "a"}, "finish_reason": None}]},
+            {"choices": [{"delta": {"content": "b"}, "finish_reason": "length"}]},
+            {"choices": [], "usage": usage},
+        ]
+        body = "".join(f"data: {_json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    result = asyncio.run(
+        run_benchmark(
+            Backend("mock", "vllm", "http://mock/v1"),
+            [1],
+            requests_per_level=2,
+            prompt_tokens=16,
+            max_tokens=2,
+            warmup=1,
+            transport=httpx.MockTransport(handler),
+        )
+    ).as_dict()
+    assert all(len(m) == 1 and m[0]["role"] == "user" for m in seen)
+    assert result["system_tokens"] == 0 and result["shared_system"] is False
+    assert result["levels"][0]["prefix_cache_hit_rate"] is None
+    poller = MetricsPoller(None, None)
+    poller.prefix_start, poller.prefix_end = (100.0, 400.0), (100.0, 400.0)
+    assert poller.prefix_cache_hit_rate is None  # no prompts in between: no rate rather than 0/0

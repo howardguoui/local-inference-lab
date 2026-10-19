@@ -41,6 +41,12 @@ def load_all(results_dir: Path | None = None) -> list[dict]:
     return list(latest.values())
 
 
+def is_prefix_run(run: dict) -> bool:
+    """A prefix-caching scenario run (system prompt in front of every request); charted separately from the
+    chat/long concurrency sweeps, which it would otherwise add a panel to."""
+    return (run.get("system_tokens") or 0) > 0
+
+
 def _fmt(x, suffix: str = "", nd: int | None = None) -> str:
     if x is None:
         return "–"
@@ -97,6 +103,29 @@ def markdown(runs: list[dict]) -> str:
             lines.append(f"| {label} | {cfg.get('cache_dtype', '?')} | {blocks:,} | {blocks * size:,} |")
         lines.append("")
         lines.append("Compare with `inference-lab plan vllm` for the same model, context and memory settings.")
+    prefix = [r for r in runs if is_prefix_run(r)]
+    if prefix:
+        lines += [
+            "",
+            "## Prefix caching",
+            "",
+            "Each request carries a system prompt of about the stated length, either the same one every time (shared) "
+            "or one made unique by a leading session number (the control, nothing reusable). Prefix cache hits = "
+            "prompt tokens vLLM served from its prefix cache during that level, from `vllm:prefix_cache_hits` / "
+            "`vllm:prefix_cache_queries`.",
+            "",
+            "| Server config | System prompt | Concurrency | Prompt tokens | TTFT p50 / p95 (ms) | Throughput (tok/s) "
+            "| Prefix cache hits |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        for run in prefix:
+            kind = f"{run['system_tokens']:,}, {'shared' if run.get('shared_system') else 'unique'}"
+            for lv in run["levels"]:
+                lines.append(
+                    f"| {run['label']} | {kind} | {lv['concurrency']} | {_fmt(lv.get('mean_prompt_tokens'))} "
+                    f"| {_fmt(lv['ttft_p50_ms'])} / {_fmt(lv['ttft_p95_ms'])} | {_fmt(lv['throughput_tok_s'])} "
+                    f"| {_pct(lv.get('prefix_cache_hit_rate'))} |"
+                )
     return "\n".join(lines) + "\n"
 
 
@@ -196,7 +225,7 @@ def chart_svg(runs: list[dict], key: str, title: str, scale: float = 1.0, log: b
 
 def write_charts(results_dir: Path | None = None) -> list[Path]:
     results_dir = results_dir or paths.results_dir()
-    runs = load_all(results_dir)
+    runs = [r for r in load_all(results_dir) if not is_prefix_run(r)]
     written = []
     for name, (key, title, scale, log) in CHARTS.items() if runs else ():
         path = results_dir / name

@@ -46,8 +46,13 @@ flowchart LR
 | Peak VRAM, GPU utilization, power | From NVML, sampled every 250 ms during each level |
 | Peak KV cache fill, preemptions | From vLLM's `/metrics`: a full cache makes vLLM evict and recompute sequences. Current llama.cpp and Ollama don't publish a KV fill metric |
 | KV blocks vLLM allocated | Read from `vllm:cache_config_info` and compared with the planner's prediction |
+| Prefix cache hit rate (prefix scenario) | Share of prompt tokens vLLM served from its prefix cache during each level, from the change in `vllm:prefix_cache_hits` / `vllm:prefix_cache_queries` |
 
 Every prompt starts with a unique request number, so prefix caching can't make repeated prompts look free.
+The prefix-caching scenario (`--system-tokens N`) measures that effect on purpose: each request carries a system
+prompt of about N tokens, identical every time with `--shared-system`, otherwise made unique by a leading session
+number as the no-reuse control. `results/latest.md` puts the two side by side (TTFT and hit rate per level); the
+charts and demo page leave them out.
 Generation ignores end-of-sequence (`ignore_eos`), so every request on vLLM and llama.cpp produces exactly
 `--max-tokens` tokens. Ollama's OpenAI endpoint drops that flag, so its requests can stop early; the report shows
 the measured prompt and output token counts on every row, so the difference is visible.
@@ -93,6 +98,7 @@ Not measured yet: Ollama on the long scenario and the optional 32B partial-offlo
 | llama.cpp, f16 and q8_0 KV cache (Qwen2.5-7B Q4_K_M) | **long:** 4,096-token prompts, 256 output tokens, concurrency 8 / 16 / 32 / 48 with 144 requests per level: 48 in flight need ~210k tokens of KV cache, more than vLLM's FP16 cache holds, which is where FP8 should pay off |
 | Ollama (qwen2.5:7b-instruct, Q4_K_M) | |
 | Optional: Qwen2.5-32B Q4_K_M through llama.cpp with the planner's `-ngl` | chat, concurrency 1 / 2 |
+| vLLM configs only | **prefix / unique:** a 2,048-token system prompt (shared, or unique as the control) plus a 128-token question, 256 output tokens, concurrency 1 / 4 / 16 |
 
 The engines are not configured identically, and the table should be read with that in mind: vLLM batches up to
 64 sequences, while llama.cpp and Ollama run 8 parallel slots, so above concurrency 8 their extra requests queue
@@ -190,6 +196,7 @@ inference-lab gpu                                    # NVML snapshot
 scripts/get_models.sh                                # GGUF for llama.cpp (vLLM and Ollama fetch their own)
 docker compose --profile vllm up -d                  # one server at a time
 inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
+inference-lab bench --backend vllm --system-tokens 2048 --shared-system --prompt-tokens 128 --label vllm-prefix
 docker compose --profile vllm down
 
 scripts/run_matrix.sh                                # every config, then results/latest.md

@@ -10,10 +10,15 @@ parallel workers and measures what users feel and what the GPU pays:
   fill and preemptions (vLLM evicting sequences because the cache ran out)
 
 Every prompt starts with a unique request number so prefix caching can't make a
-repeated prompt look free. Generation ignores end-of-sequence by default, so on vLLM and
-llama.cpp every request produces exactly max_tokens tokens (different quantizations would
-otherwise stop at different lengths and make latencies incomparable). Ollama's OpenAI
-endpoint drops the flag; its rows show the real mean output length instead.
+repeated prompt look free. The prefix-caching scenario adds a long system prompt in front
+of each question: shared (identical in every request, so vLLM can reuse its KV blocks) or,
+as the control, made unique by a leading session number. The level's prefix cache hit
+rate comes from the change in vLLM's prefix cache counters during that level.
+
+Generation ignores end-of-sequence by default, so on vLLM and llama.cpp every request
+produces exactly max_tokens tokens (different quantizations would otherwise stop at
+different lengths and make latencies incomparable). Ollama's OpenAI endpoint drops the flag;
+its rows show the real mean output length instead.
 """
 
 from __future__ import annotations
@@ -50,6 +55,21 @@ def make_prompts(n: int, prompt_tokens: int, offset: int = 0) -> list[str]:
     ]
 
 
+def make_system_prompts(n: int, system_tokens: int, shared: bool, offset: int = 0) -> list[str | None]:
+    """n system prompts of roughly system_tokens tokens, or Nones when system_tokens is 0.
+
+    Shared prompts are identical, so a prefix cache can serve them after the first request.
+    Unshared ones start with a session number: the first token block already differs, so no
+    block can be reused, while length and content stay the same as the shared prompt's.
+    """
+    if system_tokens <= 0:
+        return [None] * n
+    words = _PASSAGE.split()
+    body = " ".join(words[(i + 7) % len(words)] for i in range(max(8, int(system_tokens * 0.75))))
+    text = f"You are a tutor for GPU serving. Answer questions using these notes.\n\n{body}"
+    return [text if shared else f"Session {offset + i}. {text}" for i in range(n)]
+
+
 @dataclass
 class RequestResult:
     ok: bool
@@ -69,11 +89,18 @@ class RequestResult:
 
 
 async def stream_chat(
-    client: httpx.AsyncClient, model: str, prompt: str, max_tokens: int, ignore_eos: bool = True
+    client: httpx.AsyncClient,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    ignore_eos: bool = True,
+    system: str | None = None,
 ) -> RequestResult:
+    messages = [{"role": "system", "content": system}] if system else []
+    messages.append({"role": "user", "content": prompt})
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0,
         "stream": True,
@@ -168,6 +195,7 @@ class LevelResult:
     peak_power_w: float | None = None
     peak_kv_cache_usage: float | None = None
     preemptions: float | None = None
+    prefix_cache_hit_rate: float | None = None  # vLLM: prompt tokens served from the prefix cache, this level only
     first_error: str | None = None
 
 
@@ -179,6 +207,8 @@ class MetricsPoller:
         self.peak_kv: float | None = None
         self.preempt_start: float | None = None
         self.preempt_end: float | None = None
+        self.prefix_start: tuple[float | None, float | None] = (None, None)
+        self.prefix_end: tuple[float | None, float | None] = (None, None)
         self.last: dict = {}
         self._task: asyncio.Task | None = None
 
@@ -203,7 +233,9 @@ class MetricsPoller:
             await asyncio.sleep(self.interval)
 
     async def __aenter__(self) -> MetricsPoller:
-        self.preempt_start = (await self.read()).get("preemptions_total")
+        start = await self.read()
+        self.preempt_start = start.get("preemptions_total")
+        self.prefix_start = (start.get("prefix_cache_hits_total"), start.get("prefix_cache_queries_total"))
         if self.url:
             self._task = asyncio.create_task(self._loop())
         return self
@@ -215,13 +247,24 @@ class MetricsPoller:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        self.preempt_end = (await self.read()).get("preemptions_total")
+        end = await self.read()
+        self.preempt_end = end.get("preemptions_total")
+        self.prefix_end = (end.get("prefix_cache_hits_total"), end.get("prefix_cache_queries_total"))
 
     @property
     def preemptions(self) -> float | None:
         if self.preempt_start is None or self.preempt_end is None:
             return None
         return self.preempt_end - self.preempt_start
+
+    @property
+    def prefix_cache_hit_rate(self) -> float | None:
+        """Hits over queries (both in prompt tokens) between entering and leaving the level, so warmup and
+        earlier levels don't count. None when the server doesn't publish the counters or saw no prompts."""
+        (h0, q0), (h1, q1) = self.prefix_start, self.prefix_end
+        if None in (h0, q0, h1, q1) or q1 - q0 <= 0:
+            return None
+        return (h1 - h0) / (q1 - q0)
 
 
 async def run_level(
@@ -235,23 +278,26 @@ async def run_level(
     sampler: GpuSampler,
     offset: int = 0,
     ignore_eos: bool = True,
+    system_tokens: int = 0,
+    shared_system: bool = False,
 ) -> LevelResult:
-    queue: asyncio.Queue[str] = asyncio.Queue()
-    for p in make_prompts(n_requests, prompt_tokens, offset):
-        queue.put_nowait(p)
+    queue: asyncio.Queue[tuple[str | None, str]] = asyncio.Queue()
+    systems = make_system_prompts(n_requests, system_tokens, shared_system, offset)
+    for item in zip(systems, make_prompts(n_requests, prompt_tokens, offset), strict=True):
+        queue.put_nowait(item)
     results: list[RequestResult] = []
     in_flight = {"now": 0, "max": 0}
 
     async def worker() -> None:
         while True:
             try:
-                prompt = queue.get_nowait()
+                system, prompt = queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
             in_flight["now"] += 1
             in_flight["max"] = max(in_flight["max"], in_flight["now"])
             try:
-                results.append(await stream_chat(client, model, prompt, max_tokens, ignore_eos))
+                results.append(await stream_chat(client, model, prompt, max_tokens, ignore_eos, system))
             finally:
                 in_flight["now"] -= 1
 
@@ -293,6 +339,7 @@ async def run_level(
         peak_power_w=gpu.peak_power_w,
         peak_kv_cache_usage=_r(metrics.peak_kv, 1, 3),
         preemptions=metrics.preemptions,
+        prefix_cache_hit_rate=_r(metrics.prefix_cache_hit_rate, 1, 3),
         first_error=errors[0].error if errors else None,
     )
 
@@ -309,6 +356,8 @@ class BenchResult:
     gpu: dict | None
     server: dict
     levels: list[LevelResult] = field(default_factory=list)
+    system_tokens: int = 0  # prefix-caching scenario: system prompt length in front of every request
+    shared_system: bool = False  # True: the same system prompt every time; False: unique per request
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -327,6 +376,8 @@ async def run_benchmark(
     nvml=None,
     metrics_interval: float = 0.5,
     ignore_eos: bool = True,
+    system_tokens: int = 0,
+    shared_system: bool = False,
 ) -> BenchResult:
     if requests_per_level < max(concurrency):
         raise ValueError(
@@ -335,8 +386,13 @@ async def run_benchmark(
         )
     async with httpx.AsyncClient(base_url=backend.base_url, transport=transport) as client:
         model = backend.model or await discover_model(client)
-        for p in make_prompts(warmup, prompt_tokens, offset=10_000):  # load weights, build CUDA graphs
-            await stream_chat(client, model, p, 16)
+        warm = zip(  # load weights, build CUDA graphs (and, when shared, cache the system prompt once)
+            make_system_prompts(warmup, system_tokens, shared_system, offset=10_000),
+            make_prompts(warmup, prompt_tokens, offset=10_000),
+            strict=True,
+        )
+        for system, p in warm:
+            await stream_chat(client, model, p, 16, system=system)
         server = await MetricsPoller(client, backend.metrics_url).read()
         result = BenchResult(
             label=label or backend.name,
@@ -348,6 +404,8 @@ async def run_benchmark(
             ignore_eos=ignore_eos,
             gpu=gpu_snapshot(nvml=nvml),
             server=server,
+            system_tokens=system_tokens,
+            shared_system=shared_system and system_tokens > 0,
         )
         offset = 0
         for c in concurrency:
@@ -362,6 +420,8 @@ async def run_benchmark(
                 sampler_factory(nvml=nvml) if nvml is not None else sampler_factory(),
                 offset,
                 ignore_eos,
+                system_tokens,
+                shared_system,
             )
             result.levels.append(level)
             offset += requests_per_level

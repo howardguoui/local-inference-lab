@@ -41,6 +41,7 @@ def test_summarize_vllm():
     assert s["kv_cache_usage"] == 0.61  # the fuller engine
     assert s["requests_running"] == 5 and s["requests_waiting"] == 1
     assert s["preemptions_total"] == 7 and s["prefix_cache_hit_rate"] == 0.25
+    assert s["prefix_cache_hits_total"] == 300 and s["prefix_cache_queries_total"] == 1200
     assert s["cache_config"] == {
         "num_gpu_blocks": "18022",
         "block_size": "16",
@@ -53,6 +54,7 @@ def test_summarize_llamacpp_and_older_metric_names():
     s = prom.summarize(prom.parse(LLAMACPP))
     assert s["kv_cache_usage"] is None and s["requests_running"] == 2 and s["requests_waiting"] == 0
     assert s["preemptions_total"] is None and "cache_config" not in s
+    assert s["prefix_cache_hits_total"] is None and s["prefix_cache_hit_rate"] is None
     # names used by older releases still parse
     assert prom.summarize(prom.parse('vllm:gpu_cache_usage_perc{model_name="m"} 0.9'))["kv_cache_usage"] == 0.9
     assert prom.summarize(prom.parse("llamacpp:kv_cache_usage_ratio 0.25"))["kv_cache_usage"] == 0.25

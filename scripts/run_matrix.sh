@@ -4,6 +4,9 @@
 #   chat  512-token prompts, 256 output tokens, concurrency 1 4 16
 #   long  4096-token prompts, 256 output tokens, concurrency 8 16 32 48, 144 requests per level:
 #         48 in flight x ~4.4k tokens is ~210k tokens of KV cache, more than vLLM's FP16 cache holds
+# vLLM configs also run the prefix-caching pair (SYSTEM_TOKENS, default 2048):
+#   prefix  the same 2048-token system prompt + a unique 128-token question, concurrency 1 4 16
+#   unique  the control: same lengths, but every system prompt starts with its own session number
 #
 #   scripts/run_matrix.sh
 #   OFFLOAD=1 scripts/run_matrix.sh   # adds Qwen2.5-32B with partial GPU offload (run get_models.sh first)
@@ -15,6 +18,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 REQ="${REQ:-48}"        # chat: requests per level
 LONG_REQ="${LONG_REQ:-144}"  # long: 3 waves at the top concurrency
+SYSTEM_TOKENS="${SYSTEM_TOKENS:-2048}"  # prefix scenario: system prompt length
 
 wait_ready() {  # $1 = base URL; the first vLLM start downloads the model, so allow 20 minutes
   for _ in $(seq 1 240); do
@@ -27,7 +31,7 @@ wait_ready() {  # $1 = base URL; the first vLLM start downloads the model, so al
 bench() {  # bench <label> <backend> <prompt tokens> <requests per level> <concurrency...>
   local label=$1 backend=$2 prompt=$3 requests=$4; shift 4
   inference-lab bench --backend "$backend" --label "$label" --prompt-tokens "$prompt" --max-tokens 256 \
-    --requests "$requests" --concurrency "$@" || echo "!!! $label: benchmark failed"
+    --requests "$requests" --concurrency "$@" ${EXTRA:-} || echo "!!! $label: benchmark failed"
 }
 
 run() {  # run <label> <profile> <base url> [VAR=value ...]
@@ -43,6 +47,10 @@ run() {  # run <label> <profile> <base url> [VAR=value ...]
     fi
     bench "$label-chat" "$profile" 512 "$REQ" 1 4 16
     bench "$label-long" "$profile" 4096 "$LONG_REQ" 8 16 32 48
+    if [ "$profile" = vllm ]; then
+      EXTRA="--system-tokens $SYSTEM_TOKENS --shared-system" bench "$label-prefix" vllm 128 "$REQ" 1 4 16
+      EXTRA="--system-tokens $SYSTEM_TOKENS" bench "$label-unique" vllm 128 "$REQ" 1 4 16
+    fi
   else
     echo "!!! $label: server never became ready"
     docker compose --profile "$profile" logs --tail 30
