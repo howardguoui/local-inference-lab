@@ -25,6 +25,8 @@ def save(result: dict, results_dir: Path | None = None) -> Path:
     results_dir.mkdir(parents=True, exist_ok=True)
     stamp = re.sub(r"[^0-9]", "", result["started_at"])[:12]
     slug = re.sub(r"[^a-zA-Z0-9_.-]+", "-", result["label"]).strip("-")
+    if result.get("kind") == "accuracy":
+        slug = f"accuracy-{slug}"
     path = results_dir / f"{slug}-{stamp}.json"
     path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return path
@@ -39,6 +41,41 @@ def load_all(results_dir: Path | None = None) -> list[dict]:
         if "levels" in run:
             latest[run["label"]] = run
     return list(latest.values())
+
+
+def load_accuracy(results_dir: Path | None = None) -> list[dict]:
+    """Latest answer-accuracy run (`inference-lab accuracy`) per label, oldest label first."""
+    results_dir = results_dir or paths.results_dir()
+    latest: dict[str, dict] = {}
+    for path in sorted(results_dir.glob("*.json")):
+        run = json.loads(path.read_text(encoding="utf-8"))
+        if run.get("kind") == "accuracy":
+            latest[run["label"]] = run
+    return list(latest.values())
+
+
+def accuracy_markdown(runs: list[dict]) -> list[str]:
+    """The answer-accuracy section of latest.md: one row per server config."""
+    if not runs:
+        return []
+    lines = [
+        "",
+        "## Answer accuracy",
+        "",
+        "Exact-match accuracy on a fixed set of arithmetic word problems (`inference-lab accuracy`), greedy "
+        "decoding. Rows are comparable only when the problem set fingerprint matches. Truncated = replies cut off "
+        "at the token limit before giving an answer; unparsed = no number found in the reply.",
+        "",
+        "| Server config | Model | Problem set | Correct | Accuracy | Truncated | Unparsed | Errors |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for run in runs:
+        lines.append(
+            f"| {run['label']} | {run['model']} | {run['problem_set']} ({run['fingerprint']}) "
+            f"| {run['correct']}/{run['n']} | {run['accuracy']:.0%} | {run['truncated']} | {run['unparsed']} "
+            f"| {run['errors']} |"
+        )
+    return lines
 
 
 def is_prefix_run(run: dict) -> bool:
@@ -59,9 +96,11 @@ def _pct(x) -> str:
     return "–" if x is None else f"{x:.0%}"
 
 
-def markdown(runs: list[dict]) -> str:
-    if not runs:
+def markdown(runs: list[dict], accuracy: list[dict] | None = None) -> str:
+    if not runs and not accuracy:
         return "# Benchmarks\n\nNo runs yet. Start a server, then `inference-lab bench --backend vllm`.\n"
+    if not runs:
+        return "\n".join(["# Benchmarks", *accuracy_markdown(accuracy or [])]) + "\n"
     gpu = next((r["gpu"] for r in runs if r.get("gpu")), None)
     lines = ["# Benchmarks", ""]
     if gpu:
@@ -126,6 +165,7 @@ def markdown(runs: list[dict]) -> str:
                     f"| {_fmt(lv['ttft_p50_ms'])} / {_fmt(lv['ttft_p95_ms'])} | {_fmt(lv['throughput_tok_s'])} "
                     f"| {_pct(lv.get('prefix_cache_hit_rate'))} |"
                 )
+    lines += accuracy_markdown(accuracy or [])
     return "\n".join(lines) + "\n"
 
 
@@ -133,7 +173,7 @@ def write_markdown(results_dir: Path | None = None) -> Path:
     results_dir = results_dir or paths.results_dir()
     path = results_dir / "latest.md"
     results_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(markdown(load_all(results_dir)), encoding="utf-8")
+    path.write_text(markdown(load_all(results_dir), load_accuracy(results_dir)), encoding="utf-8")
     return path
 
 

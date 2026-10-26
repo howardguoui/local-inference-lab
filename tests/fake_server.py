@@ -5,6 +5,9 @@ cache gauge rises with the number of active requests, and the preemption counter
 ticks when more than CAPACITY requests run at once, like a real server whose cache
 is full. A system prompt seen before counts as a prefix cache hit (and prefills faster),
 like vLLM's automatic prefix caching.
+
+Non-streaming requests (the accuracy check) get `reply(question)` back, cut to max_tokens words
+with finish_reason "length" like a real server; a reply of None is a server error (HTTP 500).
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import json
 import socket
 import threading
 import time
+from collections.abc import Callable
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -22,7 +26,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 CAPACITY = 4
 
 
-def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20) -> FastAPI:
+def build_app(
+    prefill_s: float = 0.03,
+    token_s: float = 0.004,
+    tokens: int = 20,
+    reply: Callable[[str], str | None] | None = None,
+) -> FastAPI:
     app = FastAPI()
     state = {"active": 0, "peak": 0, "preemptions": 0, "prefix_hits": 0, "prefix_queries": 0}
     seen_systems: set[str] = set()
@@ -59,6 +68,16 @@ def build_app(prefill_s: float = 0.03, token_s: float = 0.004, tokens: int = 20)
         if not body.get("ignore_eos"):
             n = min(n, 5)  # the "model" reaches end-of-sequence early unless told to ignore it
         prompt = body["messages"][-1]["content"]
+        if not body.get("stream"):
+            text = reply(prompt) if reply else "t0 t1 t2"
+            if text is None:
+                return JSONResponse({"error": {"message": "internal error", "code": 500}}, status_code=500)
+            words = text.split(" ")
+            limit = body.get("max_tokens", len(words))
+            finish = "length" if len(words) > limit else "stop"
+            message = {"role": "assistant", "content": " ".join(words[:limit])}
+            usage = {"prompt_tokens": 60, "completion_tokens": min(limit, len(words)), "total_tokens": 0}
+            return {"choices": [{"index": 0, "message": message, "finish_reason": finish}], "usage": usage}
         system = next((m["content"] for m in body["messages"] if m["role"] == "system"), None)
         hit = system is not None and system in seen_systems
         if system is not None:

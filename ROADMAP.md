@@ -11,8 +11,8 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
       saved logs (`inference-lab plan vllm --vllm-log logs/<label>.log`).
 - [ ] **Run the prefix caching scenario** on the GPU (`run_matrix.sh` now includes it for vLLM) and summarize the
       TTFT drop and hit rate in the README.
-- [ ] **Quality check per config:** a small fixed answer-accuracy set (e.g. 50 arithmetic word problems with exact
-      answers) so FP8 KV cache and Q4 quantization show any accuracy cost next to their speed gain.
+- [ ] **Run the accuracy check** on the GPU (`run_matrix.sh` now runs `inference-lab accuracy` per config) and
+      put each config's score next to its throughput in the README.
 - [ ] **Speculative decoding:** vLLM n-gram / draft-model speculation on the chat scenario; acceptance rate and
       tokens/s change.
 - [ ] **SGLang backend** as a fourth OpenAI-compatible server profile.
@@ -21,6 +21,11 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 
 ## Shipped
 
+- 2026-10-26: quality check per config: `inference-lab accuracy` scores a server on 50 arithmetic word problems
+  generated from templates with a fixed seed (answers computed in code, set fingerprinted so runs stay
+  comparable), with greedy decoding and exact-match scoring of the final number. Each run is saved as
+  `results/accuracy-<label>-*.json`; `results/latest.md` gets an "Answer accuracy" table (correct, truncated,
+  unparsed, errors) and `run_matrix.sh` runs it for every config. Scores come with the next GPU run (item above).
 - 2026-10-19: prefix caching scenario: `inference-lab bench --system-tokens N [--shared-system]` puts a system
   prompt of about N tokens in front of every request, shared or (the control) unique per request, and records each
   level's prefix cache hit rate from the change in vLLM's `prefix_cache_hits` / `prefix_cache_queries` counters.

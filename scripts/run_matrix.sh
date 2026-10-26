@@ -7,6 +7,8 @@
 # vLLM configs also run the prefix-caching pair (SYSTEM_TOKENS, default 2048):
 #   prefix  the same 2048-token system prompt + a unique 128-token question, concurrency 1 4 16
 #   unique  the control: same lengths, but every system prompt starts with its own session number
+# Every config (except the 32B offload run) also answers the 50 fixed arithmetic word problems of
+# `inference-lab accuracy`, so a faster config's accuracy cost, if any, shows up next to its speed.
 #
 #   scripts/run_matrix.sh
 #   OFFLOAD=1 scripts/run_matrix.sh   # adds Qwen2.5-32B with partial GPU offload (run get_models.sh first)
@@ -47,6 +49,7 @@ run() {  # run <label> <profile> <base url> [VAR=value ...]
     fi
     bench "$label-chat" "$profile" 512 "$REQ" 1 4 16
     bench "$label-long" "$profile" 4096 "$LONG_REQ" 8 16 32 48
+    inference-lab accuracy --backend "$profile" --label "$label" || echo "!!! $label: accuracy check failed"
     if [ "$profile" = vllm ]; then
       EXTRA="--system-tokens $SYSTEM_TOKENS --shared-system" bench "$label-prefix" vllm 128 "$REQ" 1 4 16
       EXTRA="--system-tokens $SYSTEM_TOKENS" bench "$label-unique" vllm 128 "$REQ" 1 4 16

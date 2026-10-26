@@ -47,6 +47,7 @@ flowchart LR
 | Peak KV cache fill, preemptions | From vLLM's `/metrics`: a full cache makes vLLM evict and recompute sequences. Current llama.cpp and Ollama don't publish a KV fill metric |
 | KV blocks vLLM allocated | Read from `vllm:cache_config_info` and compared with the planner's prediction |
 | Prefix cache hit rate (prefix scenario) | Share of prompt tokens vLLM served from its prefix cache during each level, from the change in `vllm:prefix_cache_hits` / `vllm:prefix_cache_queries` |
+| Answer accuracy (`inference-lab accuracy`) | Exact-match score on 50 fixed arithmetic word problems, so a config that is faster because of a quantized KV cache or a different 4-bit format shows what, if anything, it costs in correctness |
 
 Every prompt starts with a unique request number, so prefix caching can't make repeated prompts look free.
 The prefix-caching scenario (`--system-tokens N`) measures that effect on purpose: each request carries a system
@@ -88,9 +89,10 @@ Throughput in output tokens/s across all streams, by concurrency:
 - **Past its 8 slots llama.cpp queues.** Its long-scenario throughput stays between 219.2 and 231.2 tok/s (f16) from
   8 to 48 streams while TTFT p95 grows from 2.2 s to 48.4 s; vLLM FP16 is at 27.5 s at 48.
 
-Not measured yet: Ollama on the long scenario and the optional 32B partial-offload run. To reproduce or extend, run
-`scripts/run_matrix.sh` on the GPU machine; it benchmarks each config in turn and writes a JSON file per run, then
-`inference-lab report` rebuilds `results/latest.md` and the two charts from those files.
+Not measured yet: Ollama on the long scenario, the optional 32B partial-offload run and answer accuracy per
+config. To reproduce or extend, run `scripts/run_matrix.sh` on the GPU machine; it benchmarks each config in turn
+and writes a JSON file per run, then `inference-lab report` rebuilds `results/latest.md` and the two charts from
+those files.
 
 | Server configs | Scenarios |
 | --- | --- |
@@ -103,6 +105,19 @@ Not measured yet: Ollama on the long scenario and the optional 32B partial-offlo
 The engines are not configured identically, and the table should be read with that in mind: vLLM batches up to
 64 sequences, while llama.cpp and Ollama run 8 parallel slots, so above concurrency 8 their extra requests queue
 and show up as TTFT. vLLM serves AWQ 4-bit weights, the others GGUF Q4_K_M.
+
+## Answer accuracy
+
+`inference-lab accuracy --backend vllm --label vllm-fp8kv` sends 50 arithmetic word problems (shopping change,
+rates, sharing, distances, ages, discounts, savings, tank flows) to the running server with greedy decoding and
+scores the final number of each reply as an exact match. The problems are generated from templates with a fixed
+seed and their answers are computed in code, so the set is identical on every machine; each run records a
+fingerprint of it (`arith-v1`, `2d5ba8a71fa3`), and runs are comparable only when that matches. Replies are parsed
+for `\boxed{N}`, then `Answer: N`, then the last number. The run is saved as `results/accuracy-<label>-*.json`
+with every problem's expected and parsed answer and the end of the reply, and `results/latest.md` gets an "Answer
+accuracy" table with the correct count, truncated replies (cut off at `--max-tokens`, default 512) and parse
+failures. `run_matrix.sh` runs it once per server config. Batching can change floating-point results slightly
+even at temperature 0, so read a difference of one or two problems as noise.
 
 ## Demo page
 
@@ -197,6 +212,7 @@ scripts/get_models.sh                                # GGUF for llama.cpp (vLLM 
 docker compose --profile vllm up -d                  # one server at a time
 inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 inference-lab bench --backend vllm --system-tokens 2048 --shared-system --prompt-tokens 128 --label vllm-prefix
+inference-lab accuracy --backend vllm --label vllm-fp16kv   # 50 word problems, exact-match accuracy
 docker compose --profile vllm down
 
 scripts/run_matrix.sh                                # every config, then results/latest.md
@@ -249,14 +265,15 @@ pytest
 The planner math (checked against published per-token KV sizes and llama.cpp's layer placement), GGUF reading on
 real files written with the `gguf` library, the Prometheus parser on current vLLM and llama.cpp output, the load
 generator against a fake streaming OpenAI-compatible server (TTFT, fixed-length output, mid-stream errors, KV cache
-fill and preemptions under overload), the NVML sampler with a fake driver, and the MCP server both in memory and
-as a stdio subprocess. CI runs them on pushes to `main` and on pull requests.
+fill and preemptions under overload), the accuracy check's fixed problem set, answer parser and scoring against the
+same fake server, the NVML sampler with a fake driver, and the MCP server both in memory and as a stdio subprocess.
+CI runs them on pushes to `main` and on pull requests.
 
 ## Layout
 
 ```
 src/inference_lab/  models.py · gguf_layout.py · planner.py · gpu.py (NVML) · prom.py (/metrics) · bench.py
-                    report.py · backends.py · paths.py · mcp_server.py (FastMCP) · cli.py
+                    accuracy.py · report.py · backends.py · paths.py · mcp_server.py (FastMCP) · cli.py
 configs/            backends.yaml
 scripts/            get_models.sh · run_matrix.sh
 docker-compose.yml  vllm · llamacpp · ollama profiles

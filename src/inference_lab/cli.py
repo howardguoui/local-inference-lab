@@ -7,6 +7,7 @@ inference-lab plan vllm --model qwen2.5-7b --weights-gib 5.19 --vllm-log logs/vl
 inference-lab plan llamacpp --gguf-path models/Qwen2.5-32B-Instruct-Q4_K_M.gguf --ctx 8192 -ctk q8_0 -ctv q8_0
 inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 inference-lab bench --backend vllm --system-tokens 2048 --shared-system --prompt-tokens 128 --label vllm-prefix
+inference-lab accuracy --backend vllm --label vllm-fp8kv
 inference-lab report
 inference-lab demo
 inference-lab mcp
@@ -117,6 +118,15 @@ def main(argv: list[str] | None = None) -> None:
         help="send the same system prompt every time (default: unique per request, the no-reuse control)",
     )
 
+    acc = sub.add_parser("accuracy", help="answer accuracy on fixed arithmetic word problems (exact match)")
+    acc.add_argument("--backend", required=True, help="name from configs/backends.yaml: vllm, llamacpp, ollama")
+    acc.add_argument("--label", help="server config this run belongs to, e.g. vllm-fp8kv (default: the backend)")
+    acc.add_argument("--problems", type=int, default=50, help="how many problems (default 50)")
+    acc.add_argument("--seed", type=int, default=0, help="problem set seed; keep 0 so runs stay comparable")
+    acc.add_argument("--concurrency", type=int, default=8, help="requests in flight")
+    acc.add_argument("--max-tokens", type=int, default=512, help="room for the reasoning before the answer")
+    acc.add_argument("--config", help="backends YAML (default configs/backends.yaml)")
+
     sub.add_parser("report", help="rebuild results/latest.md and the SVG charts from saved runs")
 
     d = sub.add_parser("demo", help="build the static demo page (GitHub Pages) from saved runs")
@@ -199,6 +209,21 @@ def main(argv: list[str] | None = None) -> None:
         path = report.save(result)
         print(report.markdown([result]))
         print(f"Saved {path}; combined table in {report.write_markdown()}")
+    elif a.cmd == "accuracy":
+        from .accuracy import run_accuracy
+
+        backend = load_backends(a.config)[a.backend]
+        try:
+            result = asyncio.run(
+                run_accuracy(backend, a.problems, a.concurrency, a.max_tokens, a.label, seed=a.seed)
+            ).as_dict()
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+        path = report.save(result)
+        print("\n".join(report.accuracy_markdown([result])).strip())
+        if result["truncated"]:
+            print(f"\n{result['truncated']} replies hit --max-tokens {a.max_tokens}; raise it to score them fairly.")
+        print(f"\nSaved {path}; combined table in {report.write_markdown()}")
     elif a.cmd == "report":
         print(report.write_markdown().read_text(encoding="utf-8"))
         report.write_charts()

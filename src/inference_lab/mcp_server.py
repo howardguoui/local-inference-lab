@@ -142,8 +142,8 @@ async def run_benchmark_tool(
 
 @mcp.resource("lab://results/latest")
 def latest_results() -> str:
-    """The comparison table across all saved benchmark runs (Markdown)."""
-    return report.markdown(report.load_all())
+    """The comparison table across all saved benchmark and answer-accuracy runs (Markdown)."""
+    return report.markdown(report.load_all(), report.load_accuracy())
 
 
 def main(http: bool = False, port: int = 8765) -> None:
