@@ -16,11 +16,18 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 - [ ] **Speculative decoding:** vLLM n-gram / draft-model speculation on the chat scenario; acceptance rate and
       tokens/s change.
 - [ ] **SGLang backend** as a fourth OpenAI-compatible server profile.
-- [ ] **Power efficiency:** tokens per joule per config from the NVML power samples.
+- [ ] **Measure power efficiency** on the GPU (every `inference-lab bench` level now records energy) and put
+      each config's tokens per joule next to its throughput in the README.
 - [ ] **MCP:** a `compare_configs` tool that answers "which config is fastest under N streams" from saved runs.
 
 ## Shipped
 
+- 2026-10-30: power efficiency: the NVML sampler records the energy the GPU board used during each level (the
+  driver's total energy counter where the GPU has one, else the power samples integrated with the trapezoid rule)
+  and its mean power; every level saves `mean_power_w`, `energy_j`, `energy_source` and `tokens_per_joule`
+  (output tokens / energy), and `results/latest.md` gets a "Power efficiency" table for runs that have them. The
+  published 2026-10-06/07 runs saved only `peak_power_w` per level, which can't give energy, so latest.md has no
+  such table yet; numbers come with the next GPU run (item above).
 - 2026-10-26: quality check per config: `inference-lab accuracy` scores a server on 50 arithmetic word problems
   generated from templates with a fixed seed (answers computed in code, set fingerprinted so runs stay
   comparable), with greedy decoding and exact-match scoring of the final number. Each run is saved as

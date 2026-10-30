@@ -14,13 +14,16 @@ def server():
 
 
 class FakeNvml:
-    """Enough of pynvml for the sampler: memory climbs 1 GiB per reading up to 12 GiB."""
+    """Enough of pynvml for the sampler: memory climbs 1 GiB per reading up to 12 GiB, power holds at
+    250 W, and the energy counter (unless energy_counter=False) advances by 1 J per read."""
 
     NVML_TEMPERATURE_GPU = 0
 
-    def __init__(self, fail_init: bool = False):
+    def __init__(self, fail_init: bool = False, energy_counter: bool = True):
         self.fail_init = fail_init
+        self.energy_counter = energy_counter
         self.reads = 0
+        self.energy_reads = 0
 
     def nvmlInit(self):
         if self.fail_init:
@@ -42,6 +45,12 @@ class FakeNvml:
 
     def nvmlDeviceGetPowerUsage(self, h):
         return 250_000  # milliwatts
+
+    def nvmlDeviceGetTotalEnergyConsumption(self, h):
+        if not self.energy_counter:
+            raise RuntimeError("Not Supported")
+        self.energy_reads += 1
+        return 5_000_000 + 1000 * self.energy_reads  # millijoules since the driver loaded
 
     def nvmlDeviceGetEnforcedPowerLimit(self, h):
         return 300_000

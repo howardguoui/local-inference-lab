@@ -135,3 +135,28 @@ def test_cli_rejects_shared_system_without_a_length():
 
     with pytest.raises(SystemExit, match="--shared-system needs --system-tokens"):
         main(["bench", "--backend", "vllm", "--shared-system"])
+
+
+def test_power_efficiency_table_only_for_runs_with_energy(tmp_path):
+    old = _run("vllm-fp16kv-chat", "2026-10-07 13:00 UTC", 400.0)  # pre-energy run: peak power only
+    old["levels"][0].update(output_tokens=8192, peak_power_w=196.0, wall_s=20.0)
+    report.save(old, tmp_path)
+    assert "## Power efficiency" not in report.write_markdown(tmp_path).read_text(encoding="utf-8")
+
+    new = _run("vllm-fp8kv-chat", "2026-10-31 13:00 UTC", 450.0)
+    new["levels"][0].update(
+        output_tokens=8192,
+        peak_power_w=231.4,
+        mean_power_w=204.8,
+        energy_j=4096.0,
+        energy_source="nvml_counter",
+        tokens_per_joule=2.0,
+    )
+    report.save(new, tmp_path)
+    md = report.write_markdown(tmp_path).read_text(encoding="utf-8")
+    assert "## Power efficiency" in md
+    assert "| vllm-fp8kv-chat | 4 | 450 | 204.8 / 231.4 | 4,096 | 2 | energy counter |" in md
+    assert "| vllm-fp16kv-chat | 4 | 400 |" not in md.split("## Power efficiency")[1]
+    assert report.tokens_per_joule(new["levels"][0]) == 2.0
+    assert report.tokens_per_joule(old["levels"][0]) is None
+    assert report.tokens_per_joule({"output_tokens": 10, "energy_j": 0}) is None

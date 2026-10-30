@@ -44,6 +44,7 @@ flowchart LR
 | TTFT p50 / p95 | Queueing plus prefill: what a user waits before the first word |
 | TPOT p50 | Decode speed per stream once it has started |
 | Peak VRAM, GPU utilization, power | From NVML, sampled every 250 ms during each level |
+| Energy, tokens per joule | Energy the whole GPU board used during each level (NVML's energy counter, else the 250 ms power samples integrated over time) and output tokens per joule. Runs before 2026-10-30 saved only peak power, so the published matrix has no energy figures yet |
 | Peak KV cache fill, preemptions | From vLLM's `/metrics`: a full cache makes vLLM evict and recompute sequences. Current llama.cpp and Ollama don't publish a KV fill metric |
 | KV blocks vLLM allocated | Read from `vllm:cache_config_info` and compared with the planner's prediction |
 | Prefix cache hit rate (prefix scenario) | Share of prompt tokens vLLM served from its prefix cache during each level, from the change in `vllm:prefix_cache_hits` / `vllm:prefix_cache_queries` |

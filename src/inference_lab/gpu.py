@@ -1,14 +1,21 @@
 """GPU telemetry through NVML (the library behind nvidia-smi).
 
 `GpuSampler` polls in a background thread while a benchmark runs and reports peak
-VRAM, mean utilization and peak power. Without an NVIDIA driver it degrades to
-"no data" instead of failing, so benchmarks still run on any machine.
+VRAM, mean utilization, peak and mean power, and the energy the board used. Without an
+NVIDIA driver it degrades to "no data" instead of failing, so benchmarks still run on any
+machine.
+
+Energy comes from NVML's total energy counter (millijoules since the driver loaded) when the
+GPU has one, else from integrating the power samples over time (trapezoid rule). Both are the
+whole board's draw, idle baseline included, not just the inference server's share.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 
 GIB = 1024**3
 
@@ -67,9 +74,20 @@ class GpuStats:
     peak_memory_gib: float | None = None
     mean_utilization_pct: float | None = None
     peak_power_w: float | None = None
+    mean_power_w: float | None = None
+    energy_j: float | None = None
+    energy_source: str | None = None  # "nvml_counter" or "power_samples"
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def energy_from_samples(times_s: list[float], watts: list[float]) -> float | None:
+    """Joules under a power curve: trapezoid rule over (time, watts) samples. None with fewer than two."""
+    if len(times_s) < 2 or len(times_s) != len(watts):
+        return None
+    points = list(zip(times_s, watts, strict=True))
+    return sum((t1 - t0) * (w0 + w1) / 2 for (t0, w0), (t1, w1) in pairwise(points))
 
 
 class GpuSampler:
@@ -84,7 +102,17 @@ class GpuSampler:
         self.mem: list[int] = []
         self.util: list[int] = []
         self.power: list[float] = []
+        self.power_t: list[float] = []  # time.monotonic() of each power sample
         self.available = False
+        self._t0 = self._t1 = 0.0
+        self._energy0_mj: int | None = None
+        self._energy1_mj: int | None = None
+
+    def _energy_mj(self) -> int | None:
+        try:
+            return int(self.nv.nvmlDeviceGetTotalEnergyConsumption(self.handle))
+        except Exception:
+            return None  # older GPUs and some drivers have no energy counter
 
     def start(self) -> GpuSampler:
         try:
@@ -95,6 +123,8 @@ class GpuSampler:
         except Exception:
             self.available = False
             return self
+        self._energy0_mj = self._energy_mj()
+        self._t0 = time.monotonic()
         self._thread = threading.Thread(target=self._run, name="gpu-sampler", daemon=True)
         self._thread.start()
         return self
@@ -104,9 +134,11 @@ class GpuSampler:
         self.mem.append(nv.nvmlDeviceGetMemoryInfo(h).used)
         self.util.append(nv.nvmlDeviceGetUtilizationRates(h).gpu)
         try:
-            self.power.append(nv.nvmlDeviceGetPowerUsage(h) / 1000)
+            watts = nv.nvmlDeviceGetPowerUsage(h) / 1000
         except Exception:
-            pass
+            return
+        self.power.append(watts)
+        self.power_t.append(time.monotonic())
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -126,16 +158,32 @@ class GpuSampler:
             self._sample()  # one final reading so short runs still report
         except Exception:
             pass
+        self._t1 = time.monotonic()
+        self._energy1_mj = self._energy_mj()
         try:
             self.nv.nvmlShutdown()
         except Exception:
             pass
+        energy, source, span = self._energy()
         return GpuStats(
             samples=len(self.mem),
             peak_memory_gib=round(max(self.mem) / GIB, 2) if self.mem else None,
             mean_utilization_pct=round(sum(self.util) / len(self.util), 1) if self.util else None,
             peak_power_w=round(max(self.power), 1) if self.power else None,
+            mean_power_w=round(energy / span, 1) if energy is not None and span > 0 else None,
+            energy_j=round(energy, 1) if energy is not None else None,
+            energy_source=source,
         )
+
+    def _energy(self) -> tuple[float | None, str | None, float]:
+        """(joules, source, seconds covered): the hardware counter if it advanced, else the power samples."""
+        e0, e1 = self._energy0_mj, self._energy1_mj
+        if e0 is not None and e1 is not None and e1 > e0:
+            return (e1 - e0) / 1000, "nvml_counter", self._t1 - self._t0
+        energy = energy_from_samples(self.power_t, self.power)
+        if energy is None:
+            return None, None, 0.0
+        return energy, "power_samples", self.power_t[-1] - self.power_t[0]
 
 
 def default_gpu_gib(which: str, fallback: float = 16.0, nvml=None) -> tuple[float, str]:

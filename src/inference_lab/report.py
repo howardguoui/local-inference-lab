@@ -78,6 +78,41 @@ def accuracy_markdown(runs: list[dict]) -> list[str]:
     return lines
 
 
+def tokens_per_joule(level: dict) -> float | None:
+    """Output tokens per joule of GPU board energy for one level; None when the run recorded no energy
+    (runs before 2026-10-30 saved only peak power, which can't give energy)."""
+    energy = level.get("energy_j")
+    if not energy or energy <= 0 or level.get("output_tokens") is None:
+        return None
+    return level["output_tokens"] / energy
+
+
+def efficiency_markdown(runs: list[dict]) -> list[str]:
+    """The power-efficiency section of latest.md: tokens per joule per level, only for runs with energy data."""
+    rows = [(run, lv) for run in runs for lv in run["levels"] if tokens_per_joule(lv) is not None]
+    if not rows:
+        return []
+    lines = [
+        "",
+        "## Power efficiency",
+        "",
+        "Tokens per joule = output tokens / energy the whole GPU board used during the level (NVML: the board's "
+        "energy counter where the GPU has one, else the power samples integrated over time; idle draw included).",
+        "",
+        "| Server config | Concurrency | Throughput (tok/s) | Mean / peak power (W) | Energy (J) | Tokens per joule "
+        "| Energy from |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for run, lv in rows:
+        source = {"nvml_counter": "energy counter", "power_samples": "power samples"}.get(lv.get("energy_source"), "–")
+        lines.append(
+            f"| {run['label']} | {lv['concurrency']} | {_fmt(lv['throughput_tok_s'])} "
+            f"| {_fmt(lv.get('mean_power_w'))} / {_fmt(lv.get('peak_power_w'))} | {round(lv['energy_j']):,} "
+            f"| {_fmt(tokens_per_joule(lv), nd=2)} | {source} |"
+        )
+    return lines
+
+
 def is_prefix_run(run: dict) -> bool:
     """A prefix-caching scenario run (system prompt in front of every request); charted separately from the
     chat/long concurrency sweeps, which it would otherwise add a panel to."""
@@ -127,6 +162,7 @@ def markdown(runs: list[dict], accuracy: list[dict] | None = None) -> str:
         "",
         "Peak KV cache comes from vLLM's `vllm:kv_cache_usage_perc`; current llama.cpp and Ollama don't report it (–).",
     ]
+    lines += efficiency_markdown(runs)
     alloc = [(r["label"], r["server"]["cache_config"]) for r in runs if r.get("server", {}).get("cache_config")]
     if alloc:
         lines += [

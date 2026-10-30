@@ -8,6 +8,7 @@ parallel workers and measures what users feel and what the GPU pays:
 - aggregate throughput: output tokens per second across all streams
 - peak VRAM, GPU utilization and power (NVML), and, from /metrics, peak KV cache
   fill and preemptions (vLLM evicting sequences because the cache ran out)
+- energy the GPU board used during the level (NVML) and output tokens per joule
 
 Every prompt starts with a unique request number so prefix caching can't make a
 repeated prompt look free. The prefix-caching scenario adds a long system prompt in front
@@ -193,6 +194,10 @@ class LevelResult:
     peak_vram_gib: float | None = None
     mean_gpu_util_pct: float | None = None
     peak_power_w: float | None = None
+    mean_power_w: float | None = None
+    energy_j: float | None = None  # whole GPU board while the level ran (see gpu.py for the source)
+    energy_source: str | None = None
+    tokens_per_joule: float | None = None  # output tokens / energy_j
     peak_kv_cache_usage: float | None = None
     preemptions: float | None = None
     prefix_cache_hit_rate: float | None = None  # vLLM: prompt tokens served from the prefix cache, this level only
@@ -337,6 +342,10 @@ async def run_level(
         peak_vram_gib=gpu.peak_memory_gib,
         mean_gpu_util_pct=gpu.mean_utilization_pct,
         peak_power_w=gpu.peak_power_w,
+        mean_power_w=gpu.mean_power_w,
+        energy_j=gpu.energy_j,
+        energy_source=gpu.energy_source,
+        tokens_per_joule=round(out_tokens / gpu.energy_j, 3) if gpu.energy_j else None,
         peak_kv_cache_usage=_r(metrics.peak_kv, 1, 3),
         preemptions=metrics.preemptions,
         prefix_cache_hit_rate=_r(metrics.prefix_cache_hit_rate, 1, 3),

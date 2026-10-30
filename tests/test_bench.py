@@ -68,6 +68,9 @@ def test_benchmark_levels_metrics_and_gpu(server, nvml):
         assert lv["ttft_p50_ms"] <= lv["ttft_p95_ms"] and lv["peak_vram_gib"] and lv["peak_power_w"] == 250
         assert lv["mean_output_tokens"] == 20 and lv["mean_prompt_tokens"] == 600
         assert lv["finish_reasons"] == {"length": 8}
+        # the fake energy counter is read at start and stop: 1 J per level
+        assert lv["energy_j"] == 1.0 and lv["energy_source"] == "nvml_counter"
+        assert lv["tokens_per_joule"] == 160.0
     assert one["max_in_flight"] == 1 and eight["max_in_flight"] == 8
     assert eight["throughput_tok_s"] > 2 * one["throughput_tok_s"]  # batching pays off
     assert eight["peak_kv_cache_usage"] > one["peak_kv_cache_usage"]
@@ -97,6 +100,35 @@ def test_gpu_sampler_tracks_peak(nvml):
     assert stats.samples >= 5 and stats.peak_memory_gib == 12.0 and stats.mean_utilization_pct == 90
     snap = gpu_snapshot(nvml=nvml)
     assert snap["memory_total_gib"] == 16 and snap["power_w"] == 250 and snap["temperature_c"] == 64
+
+
+def test_energy_from_samples_is_the_area_under_the_power_curve():
+    from inference_lab.gpu import energy_from_samples
+
+    assert energy_from_samples([0.0, 1.0, 3.0], [100.0, 200.0, 100.0]) == 150 + 300
+    assert energy_from_samples([0.0], [250.0]) is None
+    assert energy_from_samples([], []) is None
+
+
+def test_gpu_sampler_energy_counter_and_sample_fallback():
+    import time
+
+    from tests.conftest import FakeNvml
+
+    counter = GpuSampler(interval=0.01, nvml=FakeNvml()).start()
+    time.sleep(0.05)
+    stats = counter.stop()
+    assert stats.energy_source == "nvml_counter" and stats.energy_j == 1.0 and stats.mean_power_w > 0
+
+    samples = GpuSampler(interval=0.01, nvml=FakeNvml(energy_counter=False)).start()
+    time.sleep(0.1)
+    stats = samples.stop()
+    span = samples.power_t[-1] - samples.power_t[0]
+    assert stats.energy_source == "power_samples" and stats.mean_power_w == 250.0  # constant 250 W
+    assert stats.energy_j == round(250 * span, 1) and stats.peak_power_w == 250
+
+    none = GpuSampler(nvml=FakeNvml(fail_init=True)).start().stop()
+    assert none.energy_j is None and none.energy_source is None and none.mean_power_w is None
 
 
 def test_refuses_levels_that_could_never_reach_their_concurrency(server):
