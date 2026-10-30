@@ -18,10 +18,15 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
 - [ ] **SGLang backend** as a fourth OpenAI-compatible server profile.
 - [ ] **Measure power efficiency** on the GPU (every `inference-lab bench` level now records energy) and put
       each config's tokens per joule next to its throughput in the README.
-- [ ] **MCP:** a `compare_configs` tool that answers "which config is fastest under N streams" from saved runs.
 
 ## Shipped
 
+- 2026-10-30: MCP `compare_configs` tool: "which config is fastest under N streams" from the saved runs (latest per
+  config). It ranks each config's measured level at N streams by throughput (default), TTFT p50/p95, TPOT p50,
+  end-to-end p95 or tokens per joule, separately per prompt size, with failed-request levels last and a note where
+  generation stopped early; configs without a level at N are listed with the levels they did run (no
+  interpolation). Unmeasured N, unknown prompt sizes, missing energy data and an empty `results/` come back as
+  tool errors that say what was measured; the schema bounds `streams` and enumerates the metrics.
 - 2026-10-30: power efficiency: the NVML sampler records the energy the GPU board used during each level (the
   driver's total energy counter where the GPU has one, else the power samples integrated with the trapezoid rule)
   and its mean power; every level saves `mean_power_w`, `energy_j`, `energy_source` and `tokens_per_joule`

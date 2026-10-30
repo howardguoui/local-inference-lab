@@ -119,6 +119,94 @@ def is_prefix_run(run: dict) -> bool:
     return (run.get("system_tokens") or 0) > 0
 
 
+# Level fields compare_configs can rank by -> True when higher is better.
+COMPARE_METRICS = {
+    "throughput_tok_s": True,
+    "ttft_p50_ms": False,
+    "ttft_p95_ms": False,
+    "tpot_p50_ms": False,
+    "e2e_p95_s": False,
+    "tokens_per_joule": True,
+}
+
+
+def _metric(level: dict, metric: str) -> float | None:
+    return tokens_per_joule(level) if metric == "tokens_per_joule" else level.get(metric)
+
+
+def compare_configs(
+    runs: list[dict], streams: int, metric: str = "throughput_tok_s", prompt_tokens: int | None = None
+) -> dict:
+    """Rank server configs at one measured concurrency level, per scenario (prompt / output size).
+
+    Only levels actually run at `streams` count; nothing is interpolated. Runs from different prompt sizes are
+    never ranked against each other, and levels with failed requests rank after clean ones. Prefix-caching runs
+    are left out (a different workload). Raises ValueError with what *was* measured when nothing matches.
+    """
+    if streams < 1:
+        raise ValueError(f"streams must be at least 1, got {streams}")
+    if metric not in COMPARE_METRICS:
+        raise ValueError(f"metric must be one of {', '.join(COMPARE_METRICS)}; got {metric!r}")
+    sweeps = [r for r in runs if not is_prefix_run(r)]
+    if not sweeps:
+        raise ValueError("No saved benchmark runs. Start a server, then `inference-lab bench --backend vllm`.")
+    if prompt_tokens is not None:
+        sizes = sorted({r.get("prompt_tokens") for r in sweeps})
+        sweeps = [r for r in sweeps if r.get("prompt_tokens") == prompt_tokens]
+        if not sweeps:
+            raise ValueError(f"No saved run used {prompt_tokens}-token prompts; saved prompt sizes: {sizes}")
+    higher = COMPARE_METRICS[metric]
+    scenarios: dict[tuple, list[dict]] = {}
+    not_measured, no_metric = [], []
+    for run in sweeps:
+        level = next((lv for lv in run["levels"] if lv["concurrency"] == streams), None)
+        if level is None:
+            levels = [lv["concurrency"] for lv in run["levels"]]
+            not_measured.append({"label": run["label"], "prompt_tokens": run.get("prompt_tokens"), "levels": levels})
+            continue
+        value = _metric(level, metric)
+        if value is None:
+            no_metric.append(run["label"])
+            continue
+        row = {
+            "label": run["label"],
+            "model": run["model"],
+            metric: round(value, 3),
+            "throughput_tok_s": level["throughput_tok_s"],
+            "ttft_p95_ms": level.get("ttft_p95_ms"),
+            "tpot_p50_ms": level.get("tpot_p50_ms"),
+            "errors": level["errors"],
+            "requests": level["requests"],
+            "started_at": run["started_at"],
+        }
+        mean_out, target = level.get("mean_output_tokens"), run.get("max_tokens")
+        if mean_out is not None and target and mean_out < target:
+            row["note"] = f"stopped early: {mean_out:g} of {target} output tokens on average"
+        scenarios.setdefault((run.get("prompt_tokens"), run.get("max_tokens")), []).append(row)
+    if not scenarios:
+        if no_metric:
+            why = " (energy is saved per level only by runs from 2026-10-30 on)" if metric == "tokens_per_joule" else ""
+            raise ValueError(
+                f"Runs measured {streams} streams ({', '.join(no_metric)}) but none recorded {metric}{why}"
+            )
+        measured = sorted({c for item in not_measured for c in item["levels"]})
+        raise ValueError(f"No saved run measured {streams} concurrent streams; measured levels: {measured}")
+    out = []
+    for (prompt, output), rows in sorted(scenarios.items(), key=lambda kv: (kv[0][0] or 0, kv[0][1] or 0)):
+        rows.sort(key=lambda r: (r["errors"] > 0, -r[metric] if higher else r[metric]))
+        for rank, row in enumerate(rows, 1):
+            row["rank"] = rank
+        out.append({"prompt_tokens": prompt, "max_tokens": output, "best": rows[0]["label"], "ranking": rows})
+    return {
+        "streams": streams,
+        "metric": metric,
+        "better": "higher" if higher else "lower",
+        "scenarios": out,
+        "not_measured_at_streams": not_measured,
+        "missing_metric": no_metric,
+    }
+
+
 def _fmt(x, suffix: str = "", nd: int | None = None) -> str:
     if x is None:
         return "–"

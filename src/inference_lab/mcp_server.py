@@ -8,7 +8,10 @@ and run a benchmark, all as tool calls.
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+
 from fastmcp import FastMCP
+from pydantic import Field
 
 from . import prom, report
 from .backends import health, load_backends
@@ -23,7 +26,8 @@ mcp = FastMCP(
     instructions=(
         "Tools for running LLMs on a local NVIDIA GPU. Check gpu_status first; use plan_vllm or plan_llamacpp "
         "before starting a server to see what fits in VRAM; use backend_metrics to watch KV cache pressure; "
-        "run_benchmark measures throughput and latency and saves the result."
+        "run_benchmark measures throughput and latency and saves the result; compare_configs ranks the saved "
+        "runs at a given number of concurrent streams."
     ),
 )
 
@@ -138,6 +142,24 @@ async def run_benchmark_tool(
     path = report.save(data)
     report.write_markdown()
     return {"saved": str(path), "model": data["model"], "levels": data["levels"]}
+
+
+@mcp.tool(name="compare_configs")
+def compare_configs_tool(
+    streams: Annotated[int, Field(ge=1, description="Concurrent request streams: a level the runs measured, e.g. 16")],
+    metric: Annotated[
+        Literal["throughput_tok_s", "ttft_p50_ms", "ttft_p95_ms", "tpot_p50_ms", "e2e_p95_s", "tokens_per_joule"],
+        Field(description="What to rank by. throughput_tok_s and tokens_per_joule: higher wins; latencies: lower"),
+    ] = "throughput_tok_s",
+    prompt_tokens: Annotated[
+        int | None, Field(ge=1, description="Only runs with this prompt size (e.g. 512 chat, 4096 long); default all")
+    ] = None,
+) -> dict:
+    """Which server config is fastest under N concurrent streams, from the saved benchmark runs (latest run per
+    config). Ranks per scenario, since runs with different prompt sizes aren't comparable; `best` is the winner of
+    each. Only measured levels count (no interpolation): configs without a level at `streams` are listed under
+    not_measured_at_streams with the levels they did run. Rows with failed requests rank last."""
+    return report.compare_configs(report.load_all(), streams, metric, prompt_tokens)
 
 
 @mcp.resource("lab://results/latest")

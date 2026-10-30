@@ -256,6 +256,7 @@ from their own working directory. An editable install (`pip install -e .`) finds
 | `plan_llamacpp_offload` | Largest `-ngl` for a GGUF file (exact tensor sizes) and its VRAM estimate |
 | `list_backends`, `backend_metrics` | Which servers are up; live KV cache fill, queue depth, preemptions |
 | `run_benchmark` | Benchmarks a server and saves the run; results also readable as `lab://results/latest` |
+| `compare_configs` | Which config is fastest under N concurrent streams: ranks the saved runs' measured level at N (throughput, TTFT, TPOT, end-to-end latency or tokens per joule) per prompt size, failed requests last, and names configs that never ran N streams |
 
 ## Tests
 
