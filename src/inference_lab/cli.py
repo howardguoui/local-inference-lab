@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
     pl.add_argument("--reserve-gib", type=float, default=1.0, help="compute buffer + display (estimate)")
 
     b = sub.add_parser("bench", help="benchmark a running server")
-    b.add_argument("--backend", required=True, help="name from configs/backends.yaml: vllm, llamacpp, ollama")
+    b.add_argument("--backend", required=True, help="name from configs/backends.yaml: vllm, sglang, llamacpp, ollama")
     b.add_argument("--concurrency", type=int, nargs="+", default=[1, 2, 4, 8, 16])
     b.add_argument("--requests", type=int, default=32, help="requests per concurrency level")
     b.add_argument("--prompt-tokens", type=int, default=512)
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     acc = sub.add_parser("accuracy", help="answer accuracy on fixed arithmetic word problems (exact match)")
-    acc.add_argument("--backend", required=True, help="name from configs/backends.yaml: vllm, llamacpp, ollama")
+    acc.add_argument("--backend", required=True, help="name from configs/backends.yaml: vllm, sglang, llamacpp, ollama")
     acc.add_argument("--label", help="server config this run belongs to, e.g. vllm-fp8kv (default: the backend)")
     acc.add_argument("--problems", type=int, default=50, help="how many problems (default 50)")
     acc.add_argument("--seed", type=int, default=0, help="problem set seed; keep 0 so runs stay comparable")

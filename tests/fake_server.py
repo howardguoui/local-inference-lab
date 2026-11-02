@@ -1,10 +1,11 @@
-"""A stand-in for vLLM: OpenAI-compatible streaming chat, /v1/models and Prometheus /metrics.
+"""A stand-in for vLLM or SGLang: OpenAI-compatible streaming chat, /v1/models and Prometheus /metrics.
 
 Each request waits a fixed prefill time, then streams tokens at a fixed rate. The KV
 cache gauge rises with the number of active requests, and the preemption counter
 ticks when more than CAPACITY requests run at once, like a real server whose cache
 is full. A system prompt seen before counts as a prefix cache hit (and prefills faster),
-like vLLM's automatic prefix caching.
+like vLLM's automatic prefix caching. `metrics="sglang"` publishes the same state under SGLang's
+metric names, with its prompt/cached token counters counted when a request finishes, as SGLang does.
 
 Non-streaming requests (the accuracy check) get `reply(question)` back, cut to max_tokens words
 with finish_reason "length" like a real server; a reply of None is a server error (HTTP 500).
@@ -31,9 +32,11 @@ def build_app(
     token_s: float = 0.004,
     tokens: int = 20,
     reply: Callable[[str], str | None] | None = None,
+    metrics: str = "vllm",
 ) -> FastAPI:
     app = FastAPI()
     state = {"active": 0, "peak": 0, "preemptions": 0, "prefix_hits": 0, "prefix_queries": 0}
+    done = {"prompt": 0, "cached": 0}  # SGLang's counters: finished requests only
     seen_systems: set[str] = set()
 
     @app.get("/v1/models")
@@ -41,8 +44,24 @@ def build_app(
         return {"object": "list", "data": [{"id": "fake/qwen-7b", "object": "model"}]}
 
     @app.get("/metrics")
-    def metrics():
+    def metrics_endpoint():
         usage = min(1.0, state["active"] / CAPACITY)
+        if metrics == "sglang":
+            m = 'model_name="fake/qwen-7b"'
+            lines = [
+                "# HELP sglang:token_usage The token usage.",
+                "# TYPE sglang:token_usage gauge",
+                f"sglang:token_usage{{{m}}} {usage}",
+                f"sglang:num_running_reqs{{{m}}} {min(state['active'], CAPACITY)}",
+                f"sglang:num_queue_reqs{{{m}}} {max(0, state['active'] - CAPACITY)}",
+                f"sglang:num_retracted_requests_total {float(state['preemptions'])}",
+                f"sglang:max_total_num_tokens{{{m}}} 144000.0",
+            ]
+            if done["prompt"]:  # labelled counters appear only once incremented
+                lines.append(f'sglang:prompt_tokens_total{{{m},is_streaming="true"}} {float(done["prompt"])}')
+            if done["cached"]:
+                lines.append(f'sglang:cached_tokens_total{{{m},cache_source="device"}} {float(done["cached"])}')
+            return PlainTextResponse("\n".join(lines) + "\n")
         body = "\n".join(
             [
                 "# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.",
@@ -102,6 +121,8 @@ def build_app(
                     await asyncio.sleep(token_s)
                 usage = {"prompt_tokens": 600, "completion_tokens": n, "total_tokens": 600 + n}
                 yield f"data: {json.dumps({'choices': [], 'usage': usage})}\n\n"
+                done["prompt"] += 600
+                done["cached"] += 480 if hit else 0
                 yield "data: [DONE]\n\n"
             finally:
                 state["active"] -= 1

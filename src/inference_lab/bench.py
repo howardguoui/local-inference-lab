@@ -1,4 +1,4 @@
-"""Load generator for OpenAI-compatible servers (vLLM, llama.cpp, Ollama).
+"""Load generator for OpenAI-compatible servers (vLLM, SGLang, llama.cpp, Ollama).
 
 For each concurrency level it streams `requests` chat completions through that many
 parallel workers and measures what users feel and what the GPU pays:
@@ -7,16 +7,16 @@ parallel workers and measures what users feel and what the GPU pays:
 - time per output token (TPOT): decode speed once a stream has started
 - aggregate throughput: output tokens per second across all streams
 - peak VRAM, GPU utilization and power (NVML), and, from /metrics, peak KV cache
-  fill and preemptions (vLLM evicting sequences because the cache ran out)
+  fill and preemptions (vLLM evicting, or SGLang retracting, sequences because the cache ran out)
 - energy the GPU board used during the level (NVML) and output tokens per joule
 
 Every prompt starts with a unique request number so prefix caching can't make a
 repeated prompt look free. The prefix-caching scenario adds a long system prompt in front
-of each question: shared (identical in every request, so vLLM can reuse its KV blocks) or,
-as the control, made unique by a leading session number. The level's prefix cache hit
-rate comes from the change in vLLM's prefix cache counters during that level.
+of each question: shared (identical in every request, so vLLM or SGLang can reuse its KV
+blocks) or, as the control, made unique by a leading session number. The level's prefix
+cache hit rate comes from the change in the server's prefix cache counters during that level.
 
-Generation ignores end-of-sequence by default, so on vLLM and llama.cpp every request
+Generation ignores end-of-sequence by default, so on vLLM, SGLang and llama.cpp every request
 produces exactly max_tokens tokens (different quantizations would otherwise stop at
 different lengths and make latencies incomparable). Ollama's OpenAI endpoint drops the flag;
 its rows show the real mean output length instead.
@@ -108,7 +108,7 @@ async def stream_chat(
         "stream_options": {"include_usage": True},
     }
     if ignore_eos:
-        payload["ignore_eos"] = True  # vLLM and llama.cpp extension; Ollama ignores unknown fields
+        payload["ignore_eos"] = True  # vLLM, SGLang and llama.cpp extension; Ollama ignores it
     t0 = time.perf_counter()
     first: float | None = None
     chunks = 0
@@ -200,7 +200,7 @@ class LevelResult:
     tokens_per_joule: float | None = None  # output tokens / energy_j
     peak_kv_cache_usage: float | None = None
     preemptions: float | None = None
-    prefix_cache_hit_rate: float | None = None  # vLLM: prompt tokens served from the prefix cache, this level only
+    prefix_cache_hit_rate: float | None = None  # vLLM / SGLang: prompt tokens from the prefix cache, this level
     first_error: str | None = None
 
 

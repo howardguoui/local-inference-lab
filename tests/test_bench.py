@@ -216,3 +216,44 @@ def test_plain_runs_send_no_system_prompt_and_report_no_hit_rate_without_counter
     poller = MetricsPoller(None, None)
     poller.prefix_start, poller.prefix_end = (100.0, 400.0), (100.0, 400.0)
     assert poller.prefix_cache_hit_rate is None  # no prompts in between: no rate rather than 0/0
+
+
+def test_sglang_backend_metrics_through_a_benchmark(nvml):
+    """SGLang publishes KV fill, retractions and prefix cache counters under its own names; a run against it
+    fills the same level fields as a vLLM run."""
+    from inference_lab.backends import load_backends
+    from tests.fake_server import ServerThread, build_app
+
+    defaults = load_backends("/nonexistent.yaml")["sglang"]
+    assert defaults.kind == "sglang" and defaults.base_url == "http://localhost:30000/v1"
+    assert defaults.metrics_url == "http://localhost:30000/metrics"
+
+    with ServerThread(build_app(metrics="sglang")) as srv:
+        backend = Backend("fake-sglang", "sglang", srv.url + "/v1", srv.url + "/metrics")
+
+        def run(concurrency, shared):
+            return asyncio.run(
+                run_benchmark(
+                    backend,
+                    concurrency,
+                    requests_per_level=8,
+                    prompt_tokens=32,
+                    max_tokens=5,
+                    warmup=1,
+                    nvml=nvml,
+                    metrics_interval=0.01,
+                    system_tokens=256,
+                    shared_system=shared,
+                )
+            ).as_dict()
+
+        # unique prompts first: no cache hit has happened yet, so SGLang has no cached_tokens series at all
+        unique = run([1], shared=False)
+        assert unique["levels"][0]["prefix_cache_hit_rate"] == 0.0
+        shared = run([1, 8], shared=True)
+
+    assert shared["server"]["cache_config"] == {"max_total_num_tokens": "144000"}
+    one, eight = shared["levels"]
+    assert one["prefix_cache_hit_rate"] == 0.8 and eight["prefix_cache_hit_rate"] == 0.8
+    assert one["preemptions"] == 0 and eight["preemptions"] > 0  # 8 in flight, room for 4: retractions
+    assert eight["peak_kv_cache_usage"] == 1.0 and one["peak_kv_cache_usage"] <= 0.5

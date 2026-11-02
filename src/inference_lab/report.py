@@ -274,8 +274,8 @@ def markdown(runs: list[dict], accuracy: list[dict] | None = None) -> str:
             "",
             "Each request carries a system prompt of about the stated length, either the same one every time (shared) "
             "or one made unique by a leading session number (the control, nothing reusable). Prefix cache hits = "
-            "prompt tokens vLLM served from its prefix cache during that level, from `vllm:prefix_cache_hits` / "
-            "`vllm:prefix_cache_queries`.",
+            "prompt tokens the server served from its prefix cache during that level, from `vllm:prefix_cache_hits` / "
+            "`vllm:prefix_cache_queries` (vLLM) or `sglang:cached_tokens` / `sglang:prompt_tokens` (SGLang).",
             "",
             "| Server config | System prompt | Concurrency | Prompt tokens | TTFT p50 / p95 (ms) | Throughput (tok/s) "
             "| Prefix cache hits |",

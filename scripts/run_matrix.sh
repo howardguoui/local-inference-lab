@@ -4,7 +4,7 @@
 #   chat  512-token prompts, 256 output tokens, concurrency 1 4 16
 #   long  4096-token prompts, 256 output tokens, concurrency 8 16 32 48, 144 requests per level:
 #         48 in flight x ~4.4k tokens is ~210k tokens of KV cache, more than vLLM's FP16 cache holds
-# vLLM configs also run the prefix-caching pair (SYSTEM_TOKENS, default 2048):
+# vLLM and SGLang configs also run the prefix-caching pair (SYSTEM_TOKENS, default 2048):
 #   prefix  the same 2048-token system prompt + a unique 128-token question, concurrency 1 4 16
 #   unique  the control: same lengths, but every system prompt starts with its own session number
 # Every config (except the 32B offload run) also answers the 50 fixed arithmetic word problems of
@@ -15,7 +15,7 @@
 #   ONLY="vllm llamacpp" scripts/run_matrix.sh   # just these servers (e.g. Ollama already runs on the host's 11434)
 #
 # Note: llama.cpp and Ollama run 8 parallel slots (PARALLEL); at higher concurrency their extra
-# requests queue, which shows up as TTFT. vLLM batches up to 64 sequences (MAX_NUM_SEQS).
+# requests queue, which shows up as TTFT. vLLM and SGLang batch up to 64 sequences (MAX_NUM_SEQS).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REQ="${REQ:-48}"        # chat: requests per level
@@ -50,9 +50,9 @@ run() {  # run <label> <profile> <base url> [VAR=value ...]
     bench "$label-chat" "$profile" 512 "$REQ" 1 4 16
     bench "$label-long" "$profile" 4096 "$LONG_REQ" 8 16 32 48
     inference-lab accuracy --backend "$profile" --label "$label" || echo "!!! $label: accuracy check failed"
-    if [ "$profile" = vllm ]; then
-      EXTRA="--system-tokens $SYSTEM_TOKENS --shared-system" bench "$label-prefix" vllm 128 "$REQ" 1 4 16
-      EXTRA="--system-tokens $SYSTEM_TOKENS" bench "$label-unique" vllm 128 "$REQ" 1 4 16
+    if [ "$profile" = vllm ] || [ "$profile" = sglang ]; then
+      EXTRA="--system-tokens $SYSTEM_TOKENS --shared-system" bench "$label-prefix" "$profile" 128 "$REQ" 1 4 16
+      EXTRA="--system-tokens $SYSTEM_TOKENS" bench "$label-unique" "$profile" 128 "$REQ" 1 4 16
     fi
   else
     echo "!!! $label: server never became ready"
@@ -66,6 +66,8 @@ run() {  # run <label> <profile> <base url> [VAR=value ...]
 
 run vllm-fp16kv     vllm     http://localhost:8000/v1  KV_DTYPE=auto
 run vllm-fp8kv      vllm     http://localhost:8000/v1  KV_DTYPE=fp8
+run sglang-fp16kv   sglang   http://localhost:30000/v1 SGLANG_KV_DTYPE=auto
+run sglang-fp8kv    sglang   http://localhost:30000/v1 SGLANG_KV_DTYPE=fp8_e4m3
 run llamacpp-f16kv  llamacpp http://localhost:8081/v1  CACHE_K=f16 CACHE_V=f16
 run llamacpp-q8kv   llamacpp http://localhost:8081/v1  CACHE_K=q8_0 CACHE_V=q8_0
 run ollama-q4km     ollama   http://localhost:11434/v1

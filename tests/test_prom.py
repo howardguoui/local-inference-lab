@@ -58,3 +58,38 @@ def test_summarize_llamacpp_and_older_metric_names():
     # names used by older releases still parse
     assert prom.summarize(prom.parse('vllm:gpu_cache_usage_perc{model_name="m"} 0.9'))["kv_cache_usage"] == 0.9
     assert prom.summarize(prom.parse("llamacpp:kv_cache_usage_ratio 0.25"))["kv_cache_usage"] == 0.25
+
+
+# Current SGLang output (--enable-metrics), names from python/sglang/srt/observability/metrics_collector.py
+SGLANG = """# HELP sglang:token_usage The token usage.
+# TYPE sglang:token_usage gauge
+sglang:token_usage{model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 0.37
+sglang:num_running_reqs{model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 12.0
+sglang:num_queue_reqs{model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 3.0
+sglang:num_retracted_requests_total 2.0
+sglang:cache_hit_rate{model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 0.5
+sglang:max_total_num_tokens{model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 154321.0
+sglang:prompt_tokens_total{is_streaming="true",model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 1500.0
+sglang:prompt_tokens_total{is_streaming="false",model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 500.0
+sglang:cached_tokens_total{cache_source="device",model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 400.0
+sglang:cached_tokens_total{cache_source="host",model_name="Qwen/Qwen2.5-7B-Instruct-AWQ"} 100.0
+"""
+
+
+def test_summarize_sglang():
+    s = prom.summarize(prom.parse(SGLANG))
+    assert s["kv_cache_usage"] == 0.37 and s["requests_running"] == 12 and s["requests_waiting"] == 3
+    assert s["preemptions_total"] == 2  # retracted requests: SGLang's preemption
+    # series summed across is_streaming and cache_source: 500 of 2000 prompt tokens came from the cache
+    assert s["prefix_cache_queries_total"] == 2000 and s["prefix_cache_hits_total"] == 500
+    assert s["prefix_cache_hit_rate"] == 0.25
+    assert s["cache_config"] == {"max_total_num_tokens": "154321"}
+
+
+def test_sglang_before_any_cache_hit_counts_zero_hits():
+    # cached_tokens_total is a labelled counter, so it is missing until the first cached prompt token
+    text = 'sglang:prompt_tokens_total{is_streaming="true",model_name="m"} 600.0\n'
+    s = prom.summarize(prom.parse(text))
+    assert s["prefix_cache_hits_total"] == 0 and s["prefix_cache_hit_rate"] == 0
+    # with no prompts seen at all there is nothing to report
+    assert prom.summarize(prom.parse('sglang:token_usage{model_name="m"} 0.1'))["prefix_cache_hits_total"] is None

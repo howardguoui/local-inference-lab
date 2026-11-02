@@ -1,7 +1,9 @@
-# Three inference servers for one 16 GB GPU. Run ONE at a time: each claims most of VRAM.
+# Four inference servers for one 16 GB GPU. Run ONE at a time: each claims most of VRAM.
 #
 #   docker compose --profile vllm up -d                         # http://localhost:8000/v1
 #   KV_DTYPE=fp8 docker compose --profile vllm up -d            # same, FP8 KV cache
+#   docker compose --profile sglang up -d                       # http://localhost:30000/v1
+#   SGLANG_KV_DTYPE=fp8_e4m3 docker compose --profile sglang up -d
 #   docker compose --profile llamacpp up -d                     # http://localhost:8081/v1 (needs models/*.gguf)
 #   CACHE_K=q8_0 CACHE_V=q8_0 docker compose --profile llamacpp up -d
 #   docker compose --profile ollama up -d                       # http://localhost:11434/v1
@@ -29,6 +31,27 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     ports: ["8000:8000"]
+    ipc: host
+    volumes: [hf-cache:/root/.cache/huggingface]
+
+  sglang:
+    profiles: ["sglang"]
+    <<: *gpu
+    image: lmsysorg/sglang:${SGLANG_TAG:-latest}  # built on CUDA 13 (sglang docker/Dockerfile)
+    # --mem-fraction-static: share of VRAM for weights + KV pool (vLLM's --gpu-memory-utilization counterpart);
+    # the radix (prefix) cache is on by default; --enable-metrics serves Prometheus /metrics
+    entrypoint: ["python3", "-m", "sglang.launch_server"]
+    command: >
+      --model-path ${SGLANG_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      --host 0.0.0.0 --port 30000
+      --context-length ${MAX_MODEL_LEN:-8192}
+      --mem-fraction-static ${SGLANG_MEM:-0.85}
+      --kv-cache-dtype ${SGLANG_KV_DTYPE:-auto}
+      --max-running-requests ${MAX_NUM_SEQS:-64}
+      --enable-metrics
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports: ["30000:30000"]
     ipc: host
     volumes: [hf-cache:/root/.cache/huggingface]
 

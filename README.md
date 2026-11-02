@@ -2,13 +2,13 @@
 
 Serve, size and benchmark open LLMs on one consumer GPU (built on an RTX 5070 Ti, 16 GB, CUDA 12.8).
 
-- **Three servers, one harness.** vLLM, llama.cpp and Ollama run from one `docker-compose.yml`; a streaming
+- **Four servers, one harness.** vLLM, SGLang, llama.cpp and Ollama run from one `docker-compose.yml`; a streaming
   load generator measures each one on the same prompts at rising concurrency.
 - **VRAM planning before launch.** A planner predicts how much KV cache vLLM will allocate, how many full-length
   sequences fit, and how many blocks of a too-big GGUF model llama.cpp can keep on the GPU (`-ngl`), reading
   exact tensor sizes from the GGUF file.
 - **GPU and server telemetry.** NVML sampling (peak VRAM, utilization, power) plus each server's Prometheus
-  metrics (KV cache fill, preemptions, the cache vLLM actually allocated) recorded with every run.
+  metrics (KV cache fill, preemptions, the cache vLLM or SGLang actually allocated) recorded with every run.
 - **An MCP server for agents.** The same tools, exposed over the Model Context Protocol (FastMCP), so Claude Code
   or Claude Desktop can check the GPU, size a deployment and run a benchmark by asking.
 
@@ -16,19 +16,20 @@ Serve, size and benchmark open LLMs on one consumer GPU (built on an RTX 5070 Ti
 published results as charts, and the vLLM planner running in your browser (free static page, rebuilt from
 `results/` by `inference-lab demo`).
 
-**Stack:** Python, asyncio + httpx, vLLM, llama.cpp, Ollama, NVML, Prometheus, FastMCP, Docker Compose, pytest,
+**Stack:** Python, asyncio + httpx, vLLM, SGLang, llama.cpp, Ollama, NVML, Prometheus, FastMCP, Docker Compose, pytest,
 GitHub Actions
 
 ```mermaid
 flowchart LR
     subgraph GPU["RTX 5070 Ti · 16 GB (one server at a time)"]
         V[vLLM<br/>PagedAttention<br/>FP16 / FP8 KV]
+        S[SGLang<br/>RadixAttention<br/>FP16 / FP8 KV]
         L[llama.cpp<br/>GGUF, -ngl offload<br/>f16 / q8_0 KV]
         O[Ollama]
     end
     P[planner<br/>KV cache + offload] -. predicts .-> V & L
-    B[bench<br/>async streaming load] -->|OpenAI chat API| V & L & O
-    B -->|/metrics| V & L
+    B[bench<br/>async streaming load] -->|OpenAI chat API| V & S & L & O
+    B -->|/metrics| V & S & L
     N[NVML sampler] --> B
     B --> R[(results/*.json<br/>latest.md)]
     M[MCP server<br/>FastMCP] --> P & B & N
@@ -45,9 +46,9 @@ flowchart LR
 | TPOT p50 | Decode speed per stream once it has started |
 | Peak VRAM, GPU utilization, power | From NVML, sampled every 250 ms during each level |
 | Energy, tokens per joule | Energy the whole GPU board used during each level (NVML's energy counter, else the 250 ms power samples integrated over time) and output tokens per joule. Runs before 2026-10-30 saved only peak power, so the published matrix has no energy figures yet |
-| Peak KV cache fill, preemptions | From vLLM's `/metrics`: a full cache makes vLLM evict and recompute sequences. Current llama.cpp and Ollama don't publish a KV fill metric |
-| KV blocks vLLM allocated | Read from `vllm:cache_config_info` and compared with the planner's prediction |
-| Prefix cache hit rate (prefix scenario) | Share of prompt tokens vLLM served from its prefix cache during each level, from the change in `vllm:prefix_cache_hits` / `vllm:prefix_cache_queries` |
+| Peak KV cache fill, preemptions | From vLLM's and SGLang's `/metrics`: a full cache makes vLLM evict and recompute sequences (`vllm:num_preemptions`) and SGLang retract them (`sglang:num_retracted_requests`). Current llama.cpp and Ollama don't publish a KV fill metric |
+| KV blocks vLLM allocated | Read from `vllm:cache_config_info` and compared with the planner's prediction; for SGLang, its KV pool size in tokens (`sglang:max_total_num_tokens`) |
+| Prefix cache hit rate (prefix scenario) | Share of prompt tokens the server took from its prefix cache during each level, from the change in `vllm:prefix_cache_hits` / `vllm:prefix_cache_queries`, or SGLang's `sglang:cached_tokens` / `sglang:prompt_tokens` (radix cache) |
 | Answer accuracy (`inference-lab accuracy`) | Exact-match score on 50 fixed arithmetic word problems, so a config that is faster because of a quantized KV cache or a different 4-bit format shows what, if anything, it costs in correctness |
 
 Every prompt starts with a unique request number, so prefix caching can't make repeated prompts look free.
@@ -55,7 +56,7 @@ The prefix-caching scenario (`--system-tokens N`) measures that effect on purpos
 prompt of about N tokens, identical every time with `--shared-system`, otherwise made unique by a leading session
 number as the no-reuse control. `results/latest.md` puts the two side by side (TTFT and hit rate per level); the
 charts and demo page leave them out.
-Generation ignores end-of-sequence (`ignore_eos`), so every request on vLLM and llama.cpp produces exactly
+Generation ignores end-of-sequence (`ignore_eos`), so every request on vLLM, SGLang and llama.cpp produces exactly
 `--max-tokens` tokens. Ollama's OpenAI endpoint drops that flag, so its requests can stop early; the report shows
 the measured prompt and output token counts on every row, so the difference is visible.
 Mid-stream errors (servers send them inside a 200 response) and empty completions count as failures.
@@ -99,13 +100,14 @@ those files.
 | --- | --- |
 | vLLM, FP16 and FP8 KV cache (Qwen2.5-7B AWQ) | **chat:** 512-token prompts, 256 output tokens, concurrency 1 / 4 / 16 |
 | llama.cpp, f16 and q8_0 KV cache (Qwen2.5-7B Q4_K_M) | **long:** 4,096-token prompts, 256 output tokens, concurrency 8 / 16 / 32 / 48 with 144 requests per level: 48 in flight need ~210k tokens of KV cache, more than vLLM's FP16 cache holds, which is where FP8 should pay off |
+| SGLang, FP16 and FP8 (`fp8_e4m3`) KV cache (Qwen2.5-7B AWQ), added 2026-11-02, not measured yet | |
 | Ollama (qwen2.5:7b-instruct, Q4_K_M) | |
 | Optional: Qwen2.5-32B Q4_K_M through llama.cpp with the planner's `-ngl` | chat, concurrency 1 / 2 |
-| vLLM configs only | **prefix / unique:** a 2,048-token system prompt (shared, or unique as the control) plus a 128-token question, 256 output tokens, concurrency 1 / 4 / 16 |
+| vLLM and SGLang configs only | **prefix / unique:** a 2,048-token system prompt (shared, or unique as the control) plus a 128-token question, 256 output tokens, concurrency 1 / 4 / 16 |
 
 The engines are not configured identically, and the table should be read with that in mind: vLLM batches up to
-64 sequences, while llama.cpp and Ollama run 8 parallel slots, so above concurrency 8 their extra requests queue
-and show up as TTFT. vLLM serves AWQ 4-bit weights, the others GGUF Q4_K_M.
+64 sequences (SGLang's `--max-running-requests` is set to the same 64), while llama.cpp and Ollama run 8 parallel slots, so above concurrency 8 their extra requests queue
+and show up as TTFT. vLLM and SGLang serve AWQ 4-bit weights, the others GGUF Q4_K_M.
 
 ## Answer accuracy
 
@@ -215,6 +217,9 @@ inference-lab bench --backend vllm --concurrency 1 4 16 --label vllm-fp16kv
 inference-lab bench --backend vllm --system-tokens 2048 --shared-system --prompt-tokens 128 --label vllm-prefix
 inference-lab accuracy --backend vllm --label vllm-fp16kv   # 50 word problems, exact-match accuracy
 docker compose --profile vllm down
+docker compose --profile sglang up -d                # SGLang on :30000, same model as vLLM
+inference-lab bench --backend sglang --concurrency 1 4 16 --label sglang-fp16kv
+docker compose --profile sglang down
 
 scripts/run_matrix.sh                                # every config, then results/latest.md
 ONLY="vllm llamacpp" scripts/run_matrix.sh           # a subset (e.g. Ollama already runs on the host)
@@ -265,9 +270,9 @@ pytest
 ```
 
 The planner math (checked against published per-token KV sizes and llama.cpp's layer placement), GGUF reading on
-real files written with the `gguf` library, the Prometheus parser on current vLLM and llama.cpp output, the load
+real files written with the `gguf` library, the Prometheus parser on current vLLM, SGLang and llama.cpp output, the load
 generator against a fake streaming OpenAI-compatible server (TTFT, fixed-length output, mid-stream errors, KV cache
-fill and preemptions under overload), the accuracy check's fixed problem set, answer parser and scoring against the
+fill and preemptions under overload, with vLLM's or SGLang's metric names), the accuracy check's fixed problem set, answer parser and scoring against the
 same fake server, the NVML sampler with a fake driver, and the MCP server both in memory and as a stdio subprocess.
 CI runs them on pushes to `main` and on pull requests.
 
@@ -278,5 +283,5 @@ src/inference_lab/  models.py · gguf_layout.py · planner.py · gpu.py (NVML) �
                     accuracy.py · report.py · backends.py · paths.py · mcp_server.py (FastMCP) · cli.py
 configs/            backends.yaml
 scripts/            get_models.sh · run_matrix.sh
-docker-compose.yml  vllm · llamacpp · ollama profiles
+docker-compose.yml  vllm · sglang · llamacpp · ollama profiles
 ```

@@ -1,4 +1,4 @@
-"""Inference servers under test. All three speak the OpenAI chat API, so one client fits all."""
+"""Inference servers under test. All four speak the OpenAI chat API, so one client fits all."""
 
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ DEFAULTS = {
         "kind": "vllm",
         "base_url": "http://localhost:8000/v1",
         "metrics_url": "http://localhost:8000/metrics",
+    },
+    "sglang": {
+        "kind": "sglang",
+        "base_url": "http://localhost:30000/v1",
+        "metrics_url": "http://localhost:30000/metrics",  # needs --enable-metrics
     },
     "llamacpp": {
         "kind": "llamacpp",

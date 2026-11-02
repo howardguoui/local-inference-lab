@@ -5,6 +5,10 @@ backends:
     kind: vllm
     base_url: http://localhost:8000/v1
     metrics_url: http://localhost:8000/metrics
+  sglang:
+    kind: sglang
+    base_url: http://localhost:30000/v1
+    metrics_url: http://localhost:30000/metrics
   llamacpp:
     kind: llamacpp
     base_url: http://localhost:8081/v1

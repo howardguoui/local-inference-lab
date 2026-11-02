@@ -1,8 +1,8 @@
-"""Read the Prometheus /metrics endpoint that vLLM and llama.cpp (with --metrics) expose.
+"""Read the Prometheus /metrics endpoint that vLLM, SGLang (--enable-metrics) and llama.cpp (--metrics) expose.
 
 The numbers that matter for capacity are the KV cache fill level and, for vLLM,
 preemptions: when the cache is full vLLM evicts running sequences and recomputes
-them later, which shows up as latency spikes. Both are read here, along with the
+them later (SGLang calls this retraction), which shows up as latency spikes. Both are read here, along with the
 cache allocation vLLM actually made (cache_config_info), so the planner's
 prediction can be checked against reality.
 """
@@ -17,10 +17,21 @@ _LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*\})?\s+(\S+)")
 _LABEL = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
 
 # Fraction 0..1. vLLM renamed gpu_cache_usage_perc to kv_cache_usage_perc in its V1 engine.
-KV_USAGE = ("vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc", "llamacpp:kv_cache_usage_ratio")
-RUNNING = ("vllm:num_requests_running", "llamacpp:requests_processing")
-WAITING = ("vllm:num_requests_waiting", "llamacpp:requests_deferred")
-PREEMPTIONS = ("vllm:num_preemptions_total", "vllm:num_preemptions")
+# SGLang names are from python/sglang/srt/observability/metrics_collector.py.
+KV_USAGE = (
+    "vllm:kv_cache_usage_perc",
+    "vllm:gpu_cache_usage_perc",
+    "sglang:token_usage",
+    "llamacpp:kv_cache_usage_ratio",
+)
+RUNNING = ("vllm:num_requests_running", "sglang:num_running_reqs", "llamacpp:requests_processing")
+WAITING = ("vllm:num_requests_waiting", "sglang:num_queue_reqs", "llamacpp:requests_deferred")
+PREEMPTIONS = ("vllm:num_preemptions_total", "vllm:num_preemptions", "sglang:num_retracted_requests_total")
+# Prompt tokens served from the prefix cache, and prompt tokens seen. vLLM counts both when it schedules a
+# request; SGLang when a request finishes (cached_tokens_total is split by cache_source, prompt_tokens_total by
+# is_streaming; the series are summed). Only deltas over a whole level are compared, so either works.
+PREFIX_HITS = ("vllm:prefix_cache_hits_total", "sglang:cached_tokens_total")
+PREFIX_QUERIES = ("vllm:prefix_cache_queries_total", "sglang:prompt_tokens_total")
 
 
 @dataclass
@@ -61,14 +72,16 @@ def summarize(samples: list[Sample]) -> dict:
     running = _values(samples, RUNNING)
     waiting = _values(samples, WAITING)
     preempt = _values(samples, PREEMPTIONS)
-    hits = _values(samples, ("vllm:prefix_cache_hits_total",))
-    queries = _values(samples, ("vllm:prefix_cache_queries_total",))
+    hits = _values(samples, PREFIX_HITS)
+    queries = _values(samples, PREFIX_QUERIES)
+    if queries and not hits:
+        hits = [0.0]  # SGLang exports cached_tokens_total only once some prompt token has hit the cache
     out: dict = {
         "kv_cache_usage": max(kv) if kv else None,  # max across engines
         "requests_running": sum(running) if running else None,
         "requests_waiting": sum(waiting) if waiting else None,
         "preemptions_total": sum(preempt) if preempt else None,
-        # counters in prompt tokens since the server started (vllm:prefix_cache_{hits,queries} in vLLM's source)
+        # counters in prompt tokens since the server started (PREFIX_HITS / PREFIX_QUERIES above)
         "prefix_cache_hits_total": sum(hits) if hits else None,
         "prefix_cache_queries_total": sum(queries) if queries else None,
         "prefix_cache_hit_rate": (sum(hits) / sum(queries)) if hits and queries and sum(queries) else None,
@@ -80,4 +93,7 @@ def summarize(samples: list[Sample]) -> dict:
             for k in ("num_gpu_blocks", "block_size", "cache_dtype", "gpu_memory_utilization", "enable_prefix_caching")
             if k in info
         }
+    sglang_tokens = _values(samples, ("sglang:max_total_num_tokens",))
+    if sglang_tokens:  # SGLang's KV pool size in tokens, the counterpart of vLLM's num_gpu_blocks x block_size
+        out["cache_config"] = {"max_total_num_tokens": str(int(max(sglang_tokens)))}
     return out

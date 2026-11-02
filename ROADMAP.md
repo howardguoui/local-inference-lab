@@ -15,12 +15,21 @@ machine (`scripts/publish_results.sh`); nothing in `results/` is hand-written.
       put each config's score next to its throughput in the README.
 - [ ] **Speculative decoding:** vLLM n-gram / draft-model speculation on the chat scenario; acceptance rate and
       tokens/s change.
-- [ ] **SGLang backend** as a fourth OpenAI-compatible server profile.
+- [ ] **Run the SGLang configs** on the GPU (`run_matrix.sh` now includes `sglang-fp16kv` / `sglang-fp8kv`) and
+      add them to the README's findings next to vLLM.
 - [ ] **Measure power efficiency** on the GPU (every `inference-lab bench` level now records energy) and put
       each config's tokens per joule next to its throughput in the README.
 
 ## Shipped
 
+- 2026-11-02: SGLang backend as a fourth OpenAI-compatible server: a `sglang` docker-compose profile
+  (`lmsysorg/sglang`, port 30000, same Qwen2.5-7B AWQ model as vLLM, `--enable-metrics`, `--max-running-requests`
+  matched to vLLM's 64), a default `sglang` entry in `configs/backends.yaml`, and the Prometheus parser reading
+  SGLang's names (`sglang:token_usage`, `num_running_reqs`, `num_queue_reqs`, `num_retracted_requests_total` as
+  preemptions, `max_total_num_tokens` as the KV pool, and `cached_tokens_total` / `prompt_tokens_total` summed over
+  their labels for the prefix cache hit rate, counting zero hits before SGLang first exports the cached series).
+  `run_matrix.sh` runs FP16 and `fp8_e4m3` KV configs plus the prefix pair; numbers come with the next GPU run
+  (item above). Metric names, flags and `ignore_eos` support checked against SGLang's current source.
 - 2026-10-30: MCP `compare_configs` tool: "which config is fastest under N streams" from the saved runs (latest per
   config). It ranks each config's measured level at N streams by throughput (default), TTFT p50/p95, TPOT p50,
   end-to-end p95 or tokens per joule, separately per prompt size, with failed-request levels last and a note where
